@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0d0f14;
+            --surface: #161a22;
+            --surface2: #1c2030;
+            --border: rgba(255, 255, 255, 0.06);
+            --text: #e8ecf4;
+            --muted: #6b7585;
+            --accent-teal: #00e5b4;
+            --accent-blue: #4da6ff;
+            --accent-amber: #ffb347;
+            --accent-red: #ff5f6d;
+            --font: 'Courier New', monospace;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 28px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--accent-teal);
+        }
+
+        .logo span {
+            color: var(--muted);
+            font-weight: normal;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+
+        #status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+            display: inline-block;
+            margin-right: 6px;
+            transition: background 0.3s;
+        }
+
+        #status-dot.live {
+            background: var(--accent-teal);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.3;
+            }
+        }
+
+        #last-update {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .grid-4 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+        }
+
+        .card.teal::before {
+            background: var(--accent-teal);
+        }
+
+        .card.blue::before {
+            background: var(--accent-blue);
+        }
+
+        .card.amber::before {
+            background: var(--accent-amber);
+        }
+
+        .card.red::before {
+            background: var(--accent-red);
+        }
+
+        .card-label {
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 12px;
+        }
+
+        .card-value {
+            font-size: 36px;
+            font-weight: bold;
+            line-height: 1;
+            margin-bottom: 4px;
+            transition: color 0.3s;
+        }
+
+        .card.teal .card-value {
+            color: var(--accent-teal);
+        }
+
+        .card.blue .card-value {
+            color: var(--accent-blue);
+        }
+
+        .card.amber .card-value {
+            color: var(--accent-amber);
+        }
+
+        .card.red .card-value {
+            color: var(--accent-red);
+        }
+
+        .card-unit {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .gauge-wrap {
+            margin-top: 14px;
+            background: var(--surface2);
+            border-radius: 4px;
+            height: 4px;
+            overflow: hidden;
+        }
+
+        .gauge-bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.6s ease;
+        }
+
+        .card.teal .gauge-bar {
+            background: var(--accent-teal);
+        }
+
+        .card.blue .gauge-bar {
+            background: var(--accent-blue);
+        }
+
+        .card.amber .gauge-bar {
+            background: var(--accent-amber);
+        }
+
+        .card.red .gauge-bar {
+            background: var(--accent-red);
+        }
+
+        .charts-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .chart-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .chart-title {
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 16px;
+        }
+
+        .chart-wrap {
+            position: relative;
+            width: 100%;
+            height: 180px;
+        }
+
+        .no-data {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--muted);
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+
+        footer {
+            text-align: center;
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 12px;
+            letter-spacing: 1px;
+        }
+
+        @media (max-width: 900px) {
+            .grid-4 {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .charts-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 500px) {
+            .grid-4 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <div class="logo">
+            <span id="status-dot"></span>
+            IoT Sensor Monitor
+            <span>// ESP32</span>
+        </div>
+        <div id="last-update">-- chưa có dữ liệu --</div>
+    </header>
+
+    <div class="grid-4">
+        <div class="card teal">
+            <div class="card-label">Mực nước</div>
+            <div class="card-value" id="val-water">--</div>
+            <div class="card-unit">cm</div>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="bar-water" style="width:0%"></div>
+            </div>
+        </div>
+        <div class="card blue">
+            <div class="card-label">Độ ẩm đất</div>
+            <div class="card-value" id="val-moisture">--</div>
+            <div class="card-unit">%</div>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="bar-moisture" style="width:0%"></div>
+            </div>
+        </div>
+        <div class="card amber">
+            <div class="card-label">Tần số rung</div>
+            <div class="card-value" id="val-freq">--</div>
+            <div class="card-unit">Hz</div>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="bar-freq" style="width:0%"></div>
+            </div>
+        </div>
+        <div class="card red">
+            <div class="card-label">Biên độ rung</div>
+            <div class="card-value" id="val-amp">--</div>
+            <div class="card-unit">units</div>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="bar-amp" style="width:0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="charts-row">
+        <div class="chart-card">
+            <div class="chart-title">Mực nước &amp; Độ ẩm (60 điểm gần nhất)</div>
+            <div class="chart-wrap">
+                <canvas id="chartWaterMoisture" role="img" aria-label="Biểu đồ mực nước và độ ẩm theo thời gian">
+                    <div class="no-data">Đang chờ dữ liệu...</div>
+                </canvas>
+            </div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-title">Tần số &amp; Biên độ rung (60 điểm gần nhất)</div>
+            <div class="chart-wrap">
+                <canvas id="chartVibration" role="img" aria-label="Biểu đồ tần số và biên độ rung theo thời gian">
+                    <div class="no-data">Đang chờ dữ liệu...</div>
+                </canvas>
+            </div>
+        </div>
+    </div>
+
+    <footer>SENSOR DASHBOARD &nbsp;|&nbsp; Real-time via WebSocket</footer>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <script>
+        const MAX_HISTORY = 60;
+        const labels = [];
+        const dataWater = [], dataMoisture = [], dataFreq = [], dataAmp = [];
+
+        const chartColors = {
+            teal: '#00e5b4',
+            blue: '#4da6ff',
+            amber: '#ffb347',
+            red: '#ff5f6d',
+        };
+
+        function makeChart(id, datasets) {
+            const ctx = document.getElementById(id).getContext('2d');
+            return new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#6b7585', font: { size: 10 } } }
+                    },
+                    elements: { point: { radius: 0 }, line: { tension: 0.3, borderWidth: 1.5 } }
+                }
+            });
+        }
+
+        const chartWM = makeChart('chartWaterMoisture', [
+            { label: 'Mực nước (cm)', data: dataWater, borderColor: chartColors.teal, backgroundColor: 'rgba(0,229,180,0.07)', fill: true },
+            { label: 'Độ ẩm (%)', data: dataMoisture, borderColor: chartColors.blue, backgroundColor: 'rgba(77,166,255,0.07)', fill: true },
+        ]);
+
+        const chartVib = makeChart('chartVibration', [
+            { label: 'Tần số (Hz)', data: dataFreq, borderColor: chartColors.amber, backgroundColor: 'rgba(255,179,71,0.07)', fill: true },
+            { label: 'Biên độ', data: dataAmp, borderColor: chartColors.red, backgroundColor: 'rgba(255,95,109,0.07)', fill: true },
+        ]);
+
+        function pushData(ts, water, moisture, freq, amp) {
+            const label = new Date(ts).toLocaleTimeString('vi-VN');
+            labels.push(label); dataWater.push(+water.toFixed(2)); dataMoisture.push(+moisture.toFixed(1));
+            dataFreq.push(+freq.toFixed(2)); dataAmp.push(+amp.toFixed(2));
+            if (labels.length > MAX_HISTORY) {
+                [labels, dataWater, dataMoisture, dataFreq, dataAmp].forEach(a => a.shift());
+            }
+            chartWM.update('none');
+            chartVib.update('none');
+        }
+
+        function updateCards(d) {
+            document.getElementById('val-water').textContent = d.waterLevel.toFixed(1);
+            document.getElementById('val-moisture').textContent = d.moisture.toFixed(1);
+            document.getElementById('val-freq').textContent = d.freq.toFixed(2);
+            document.getElementById('val-amp').textContent = d.amp.toFixed(0);
+            document.getElementById('bar-water').style.width = Math.min(d.percent, 100).toFixed(1) + '%';
+            document.getElementById('bar-moisture').style.width = Math.min(d.moisture, 100).toFixed(1) + '%';
+            document.getElementById('bar-freq').style.width = Math.min(d.freq / 10 * 100, 100).toFixed(1) + '%';
+            document.getElementById('bar-amp').style.width = Math.min(d.amp / 5000 * 100, 100).toFixed(1) + '%';
+            document.getElementById('last-update').textContent = 'cập nhật: ' + new Date(d.timestamp).toLocaleTimeString('vi-VN');
+        }
+
+        // Socket.IO client
+        const socket = io("http://[::1]:3000", { transports: ['websocket'] });
+
+        socket.on('connect', () => {
+            document.getElementById('status-dot').classList.add('live');
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('status-dot').classList.remove('live');
+        });
+
+        socket.on('update', (d) => {
+            updateCards(d);
+            pushData(d.timestamp, d.waterLevel, d.moisture, d.freq, d.amp);
+        });
+
+        socket.on('history', (h) => {
+            if (!h.timestamps || h.timestamps.length === 0) return;
+            labels.length = 0; dataWater.length = 0; dataMoisture.length = 0;
+            dataFreq.length = 0; dataAmp.length = 0;
+            h.timestamps.forEach((ts, i) => {
+                labels.push(new Date(ts).toLocaleTimeString('vi-VN'));
+                dataWater.push(+(h.waterLevel[i] ?? 0).toFixed(2));
+                dataMoisture.push(+(h.moisture[i] ?? 0).toFixed(1));
+                dataFreq.push(+(h.freq[i] ?? 0).toFixed(2));
+                dataAmp.push(+(h.amp[i] ?? 0).toFixed(2));
+            });
+            chartWM.update();
+            chartVib.update();
+        });
+    </script>
+</body>
+
+</html>

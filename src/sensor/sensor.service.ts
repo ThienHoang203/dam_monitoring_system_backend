@@ -22,7 +22,10 @@ export class SensorService {
       amp: +dto.amp,
       waterLevel: +dto.waterLevel,
       moisture: +dto.moisture,
-      percent: dto.percent != null ? +dto.percent : +((dto.waterLevel / 50) * 100).toFixed(1),
+      percent:
+        dto.percent != null
+          ? +dto.percent
+          : +((dto.waterLevel / 50) * 100).toFixed(1),
       timestamp: new Date().toISOString(),
     };
 
@@ -49,7 +52,9 @@ export class SensorService {
     h.percent.push(s.percent);
 
     if (h.timestamps.length > MAX_HISTORY) {
-      (Object.keys(h) as (keyof SensorHistory)[]).forEach((k) => (h[k] as any[]).shift());
+      (Object.keys(h) as (keyof SensorHistory)[]).forEach((k) =>
+        (h[k] as any[]).shift(),
+      );
     }
   }
 }

@@ -1,9 +1,16 @@
-import { Body, Controller, Get, HttpCode, Post, BadRequestException } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Post,
+  BadRequestException,
+} from '@nestjs/common';
 import { SensorService } from './sensor.service';
 import { SensorDataDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
 
-@Controller('api')
+@Controller('sensor')
 export class SensorController {
   constructor(
     private readonly sensorService: SensorService,
@@ -13,7 +20,12 @@ export class SensorController {
   @Post('all')
   @HttpCode(200)
   ingest(@Body() dto: SensorDataDto) {
-    if (dto.freq == null || dto.amp == null || dto.waterLevel == null || dto.moisture == null) {
+    if (
+      dto.freq == null ||
+      dto.amp == null ||
+      dto.waterLevel == null ||
+      dto.moisture == null
+    ) {
       throw new BadRequestException('Missing required sensor fields');
     }
 

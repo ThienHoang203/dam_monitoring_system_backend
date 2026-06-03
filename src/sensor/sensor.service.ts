@@ -33,13 +33,13 @@ export class SensorService implements OnModuleInit {
     private readonly alarmEventRepo: Repository<AlarmEvent>,
     private readonly bufferService: SensorBufferService,
     private readonly vibrationWindowService: VibrationWindowService,
-  ) {}
+  ) { }
 
   // Khởi tạo ngưỡng mặc định khi khởi động ứng dụng nếu chưa tồn tại
   async onModuleInit() {
     console.log('[SensorService] Đang kiểm tra cấu hình ngưỡng mặc định...');
     const types = ['vibration', 'water_level', 'humidity'];
-    
+
     for (const type of types) {
       const exists = await this.thresholdConfigRepo.findOne({
         where: { damId: DEFAULT_DAM_ID, sensorType: type },
@@ -49,7 +49,7 @@ export class SensorService implements OnModuleInit {
         const config = new ThresholdConfig();
         config.damId = DEFAULT_DAM_ID;
         config.sensorType = type;
-        
+
         if (type === 'vibration') {
           config.warnLow = 0;
           config.warnHigh = 2.5;
@@ -250,7 +250,7 @@ export class SensorService implements OnModuleInit {
     event.measuredVal = measuredVal;
     event.durationS = durationS;
     event.notes = notes;
-    
+
     // Nếu là mức CRITICAL hoặc ALERT, chuẩn bị trigger camera AI (sẽ được dispatch sau)
     if (severity === 'ALERT' || severity === 'CRITICAL') {
       event.cameraActivated = true;

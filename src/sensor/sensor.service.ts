@@ -78,7 +78,7 @@ export class SensorService implements OnModuleInit {
     }
   }
 
-  async ingest(dto: SensorDataDto): Promise<SensorSnapshot> {
+  async ingest(dto: SensorDataDto): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
     const timestamp = new Date();
     const damId = DEFAULT_DAM_ID;
     const sensorId = 'sensor_node_1';
@@ -114,7 +114,9 @@ export class SensorService implements OnModuleInit {
 
     readingsToInsert.forEach(reading => this.bufferService.push(reading));
 
-    // 3. Đánh giá ngưỡng cảnh báo & Tạo AlarmEvent
+    // 3. Đánh giá ngưỡng cảnh báo & Tạo AlarmEvent — thu thập để broadcast
+    const newAlarms: AlarmEvent[] = [];
+
     if (vibConfig) {
       const vibResult = this.vibrationWindowService.evaluate(
         sensorId,
@@ -129,7 +131,7 @@ export class SensorService implements OnModuleInit {
       );
 
       if (vibResult.breach) {
-        await this.createAlarmEvent(
+        const alarm = await this.createAlarmEvent(
           damId,
           sensorId,
           'vibration',
@@ -139,12 +141,13 @@ export class SensorService implements OnModuleInit {
           Math.round(vibResult.durationMs / 1000),
           `Rung động vượt ngưỡng liên tiếp: ${dto.amp} mm/s`
         );
+        if (alarm) newAlarms.push(alarm);
       }
     }
 
     if (waterConfig && dto.waterLevel >= waterConfig.alertHigh) {
       const severity = dto.waterLevel >= waterConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      await this.createAlarmEvent(
+      const alarm = await this.createAlarmEvent(
         damId,
         sensorId,
         'water_level',
@@ -154,11 +157,12 @@ export class SensorService implements OnModuleInit {
         0,
         `Mực nước vượt ngưỡng báo động: ${dto.waterLevel} cm`
       );
+      if (alarm) newAlarms.push(alarm);
     }
 
     if (humConfig && dto.moisture >= humConfig.alertHigh) {
       const severity = dto.moisture >= humConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      await this.createAlarmEvent(
+      const alarm = await this.createAlarmEvent(
         damId,
         sensorId,
         'humidity',
@@ -168,10 +172,12 @@ export class SensorService implements OnModuleInit {
         0,
         `Độ ẩm rò rỉ vượt ngưỡng: ${dto.moisture}%`
       );
+      if (alarm) newAlarms.push(alarm);
     }
 
-    return snapshot;
+    return { snapshot, alarms: newAlarms };
   }
+
 
   getLatest(): SensorSnapshot | null {
     return this.latest;
@@ -200,6 +206,35 @@ export class SensorService implements OnModuleInit {
     return this.thresholdConfigRepo.findOneOrFail({ where: { id } });
   }
 
+  // ── Alarm Events API ─────────────────────────────────────────────
+  async getAlarmEvents(
+    damId: string,
+    limit = 50,
+    severity?: string,
+    resolved?: boolean,
+  ): Promise<AlarmEvent[]> {
+    const qb = this.alarmEventRepo.createQueryBuilder('a')
+      .where('a.damId = :damId', { damId })
+      .orderBy('a.triggeredAt', 'DESC')
+      .take(limit);
+
+    if (severity) {
+      qb.andWhere('a.severity = :severity', { severity });
+    }
+    if (resolved === true) {
+      qb.andWhere('a.resolvedAt IS NOT NULL');
+    } else if (resolved === false) {
+      qb.andWhere('a.resolvedAt IS NULL');
+    }
+
+    return qb.getMany();
+  }
+
+  async resolveAlarmEvent(id: string): Promise<AlarmEvent> {
+    await this.alarmEventRepo.update(id, { resolvedAt: new Date() });
+    return this.alarmEventRepo.findOneOrFail({ where: { id } });
+  }
+
   private createReading(
     time: Date,
     sensorId: string,
@@ -218,7 +253,8 @@ export class SensorService implements OnModuleInit {
     return r;
   }
 
-  private async createAlarmEvent(
+  // Trả về AlarmEvent nếu tạo thành công, null nếu bị de-dupe
+  async createAlarmEvent(
     damId: string,
     sensorId: string,
     sensorType: string,
@@ -227,7 +263,7 @@ export class SensorService implements OnModuleInit {
     measuredVal: number,
     durationS: number,
     notes: string,
-  ) {
+  ): Promise<AlarmEvent | null> {
     // Để tránh spam nhiều sự kiện cảnh báo trùng lặp liên tục trong thời gian ngắn,
     // ta chỉ tạo cảnh báo mới nếu sự kiện trước đó cách đây quá 1 phút hoặc đã được resolved.
     const lastEvent = await this.alarmEventRepo.findOne({
@@ -235,10 +271,10 @@ export class SensorService implements OnModuleInit {
       order: { triggeredAt: 'DESC' },
     });
 
-    const ONE_MINUTE = 60 * 1000;
-    if (lastEvent && (new Date().getTime() - lastEvent.triggeredAt.getTime() < ONE_MINUTE) && !lastEvent.resolvedAt) {
+    const DE_DUPE_INTERVAL = 5 * 1000; // Đặt 5 giây để dễ test trong quá trình phát triển (mặc định là 60 giây)
+    if (lastEvent && (new Date().getTime() - lastEvent.triggeredAt.getTime() < DE_DUPE_INTERVAL) && !lastEvent.resolvedAt) {
       // Bỏ qua không tạo thêm event để tránh spam
-      return;
+      return null;
     }
 
     const event = new AlarmEvent();
@@ -258,6 +294,7 @@ export class SensorService implements OnModuleInit {
 
     await this.alarmEventRepo.save(event);
     console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} - Giá trị đo: ${measuredVal}`);
+    return event;
   }
 
   private pushHistory(s: SensorSnapshot) {

@@ -32,8 +32,14 @@ export class SensorController {
       throw new BadRequestException('Missing required sensor fields');
     }
 
-    const snapshot = await this.sensorService.ingest(dto);
+    const { snapshot, alarms } = await this.sensorService.ingest(dto);
     this.gateway.broadcastUpdate(snapshot);
+
+    // Broadcast từng alarm event mới qua WebSocket
+    for (const alarm of alarms) {
+      this.gateway.broadcastAlarm(alarm);
+    }
+
     return { ok: true };
   }
 
@@ -45,7 +51,7 @@ export class SensorController {
     };
   }
 
-  // Lấy lịch sử thô từ TimescaleDB cho một loại cảm biến cụ thể
+  // Lấy lịch sử dữ liệu thực tế từ TimescaleDB cho một loại cảm biến cụ thể
   @Get('history/long-term')
   async getLongTermHistory(
     @Query('type') type: string,
@@ -76,5 +82,33 @@ export class SensorController {
     const updated = await this.sensorService.updateThresholdConfig(id, body);
     return { ok: true, data: updated };
   }
-}
 
+  // ── Alarm Events ─────────────────────────────────────────────────
+  // Lấy danh sách sự kiện cảnh báo
+  @Get('alarms')
+  async getAlarmEvents(
+    @Query('damId') damId: string,
+    @Query('limit') limit?: string,
+    @Query('severity') severity?: string,
+    @Query('resolved') resolved?: string,
+  ) {
+    const targetDamId = damId || 'dam_1';
+    const maxLimit = limit ? parseInt(limit, 10) : 50;
+    const resolvedFlag = resolved === 'true' ? true : resolved === 'false' ? false : undefined;
+
+    const alarms = await this.sensorService.getAlarmEvents(
+      targetDamId,
+      maxLimit,
+      severity || undefined,
+      resolvedFlag,
+    );
+    return { alarms };
+  }
+
+  // Đánh dấu sự kiện cảnh báo đã xử lý
+  @Put('alarms/:id/resolve')
+  async resolveAlarmEvent(@Param('id') id: string) {
+    const resolved = await this.sensorService.resolveAlarmEvent(id);
+    return { ok: true, data: resolved };
+  }
+}

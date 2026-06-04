@@ -50,6 +50,19 @@ export class DownsamplerService implements OnApplicationBootstrap {
         }
       }
 
+      // Kiểm tra cấu trúc cột của bảng sensor_readings_1min nếu đã tồn tại
+      const columns = await queryRunner.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'sensor_readings_1min'
+      `);
+      
+      const hasCamelCase = columns.some((c: any) => c.column_name === 'sensorId');
+      if (columns.length > 0 && !hasCamelCase) {
+        console.log('[Downsampler] Phát hiện bảng sensor_readings_1min có cấu trúc cột cũ (snake_case/lowercase). Đang tiến hành xóa bảng cũ để tạo lại đúng chuẩn camelCase...');
+        await queryRunner.query('DROP TABLE IF EXISTS sensor_readings_1min CASCADE;');
+      }
+
       // Tạo bảng tổng hợp phút sensor_readings_1min nếu chưa tồn tại.
       // Dùng tên cột camelCase có dấu ngoặc kép để đồng nhất với bảng sensor_readings.
       await queryRunner.query(`
@@ -65,6 +78,11 @@ export class DownsamplerService implements OnApplicationBootstrap {
         );
       `);
       console.log('[Downsampler] Khởi tạo thành công bảng tổng hợp sensor_readings_1min.');
+      
+      // Chạy gộp dữ liệu thử nghiệm ngay khi khởi chạy ứng dụng để tiện kiểm tra
+      this.downsampleToMinutes().catch(err => {
+        console.error('[Downsampler] Lỗi chạy downsample lúc khởi chạy:', err);
+      });
     } catch (error) {
       console.error('[Downsampler] Lỗi nghiêm trọng khi khởi tạo database:', error);
     } finally {
@@ -72,8 +90,8 @@ export class DownsamplerService implements OnApplicationBootstrap {
     }
   }
 
-  // Cron Job chạy mỗi giờ để downsample dữ liệu thô sang trung bình 1 phút
-  @Cron('0 * * * *')
+  // Cron Job chạy mỗi 5 phút để downsample dữ liệu thô sang trung bình 1 phút
+  @Cron('*/5 * * * *')
   async downsampleToMinutes() {
     console.log('[Downsampler] Đang chạy cron downsample sang 1 phút...');
     try {
@@ -89,8 +107,7 @@ export class DownsamplerService implements OnApplicationBootstrap {
           MAX(value) as max_value,
           "damId"
         FROM sensor_readings
-        WHERE time > NOW() - INTERVAL '2 hours'
-          AND time < NOW() - INTERVAL '1 hour'
+        WHERE time > NOW() - INTERVAL '10 minutes'
         GROUP BY time_bucket('1 minute', time), "sensorId", "sensorType", "damId"
         ON CONFLICT (time, "sensorId", "sensorType") DO UPDATE SET
           avg_value = EXCLUDED.avg_value,

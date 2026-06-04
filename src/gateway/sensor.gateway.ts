@@ -31,4 +31,9 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
   broadcastUpdate(snapshot: SensorSnapshot) {
     this.server.emit('update', snapshot);
   }
+
+  // Broadcast alarm event mới tới tất cả client
+  broadcastAlarm(alarm: any) {
+    this.server.emit('alarm', alarm);
+  }
 }

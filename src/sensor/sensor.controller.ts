@@ -111,4 +111,17 @@ export class SensorController {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
     return { ok: true, data: resolved };
   }
+
+  // Nhận kết quả từ Camera AI và cập nhật báo động
+  @Put('alarms/:id/ai-result')
+  async updateAiResult(
+    @Param('id') id: string,
+    @Body() body: { crackDetected: boolean; crackConfidence: number; imageUrl: string }
+  ) {
+    console.log(`[AI-Result] Nhận kết quả AI cho alarm ${id}:`, JSON.stringify(body));
+    const updated = await this.sensorService.updateAlarmEventAiResult(id, body);
+    console.log(`[AI-Result] Đã cập nhật DB, imageUrl = ${updated.imageUrl}`);
+    this.gateway.broadcastAlarm(updated);
+    return { ok: true, data: updated };
+  }
 }

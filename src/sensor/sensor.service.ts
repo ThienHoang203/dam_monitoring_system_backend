@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import { SensorDataDto, SensorHistory, SensorSnapshot } from './sensor.dto';
 import { SensorReading } from './entities/sensor-reading.entity';
 import { ThresholdConfig } from './entities/threshold-config.entity';
@@ -33,6 +34,7 @@ export class SensorService implements OnModuleInit {
     private readonly alarmEventRepo: Repository<AlarmEvent>,
     private readonly bufferService: SensorBufferService,
     private readonly vibrationWindowService: VibrationWindowService,
+    private readonly configService: ConfigService,
   ) { }
 
   // Khởi tạo ngưỡng mặc định khi khởi động ứng dụng nếu chưa tồn tại
@@ -235,6 +237,18 @@ export class SensorService implements OnModuleInit {
     return this.alarmEventRepo.findOneOrFail({ where: { id } });
   }
 
+  async updateAlarmEventAiResult(
+    id: string,
+    update: { crackDetected: boolean; crackConfidence: number; imageUrl: string }
+  ): Promise<AlarmEvent> {
+    await this.alarmEventRepo.update(id, {
+      crackDetected: update.crackDetected,
+      crackConfidence: update.crackConfidence,
+      imageUrl: update.imageUrl,
+    });
+    return this.alarmEventRepo.findOneOrFail({ where: { id } });
+  }
+
   private createReading(
     time: Date,
     sensorId: string,
@@ -294,7 +308,34 @@ export class SensorService implements OnModuleInit {
 
     await this.alarmEventRepo.save(event);
     console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} - Giá trị đo: ${measuredVal}`);
+
+    if (event.cameraActivated) {
+      this.triggerAiCamera(event);
+    }
+
     return event;
+  }
+
+  triggerAiCamera(alarm: AlarmEvent) {
+    const jetsonUrl = this.configService.get<string>('JETSON_TX2_URL', 'http://localhost:8080');
+    const cameraUrl = `${jetsonUrl}/camera/trigger-inference`;
+
+    console.log(`[SensorService] Đang gửi lệnh kích hoạt Camera AI tới: ${cameraUrl} cho sự kiện cảnh báo ${alarm.id}`);
+
+    fetch(cameraUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        alarmId: alarm.id,
+        sensorId: alarm.sensorId,
+        sensorType: alarm.sensorType,
+        measuredValue: alarm.measuredVal,
+        severity: alarm.severity,
+        timestamp: alarm.triggeredAt,
+      }),
+    }).catch(err => {
+      console.log('[SensorService] Lỗi kích hoạt Camera AI:', err.message);
+    });
   }
 
   private pushHistory(s: SensorSnapshot) {

@@ -16,7 +16,7 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server!: Server;
 
-  constructor(private readonly sensorService: SensorService) {}
+  constructor(private readonly sensorService: SensorService) { }
 
   handleConnection(client: Socket) {
     const latest = this.sensorService.getLatest();
@@ -26,9 +26,14 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.emit('history', history);
   }
 
-  handleDisconnect(_client: Socket) {}
+  handleDisconnect(_client: Socket) { }
 
   broadcastUpdate(snapshot: SensorSnapshot) {
     this.server.emit('update', snapshot);
+  }
+
+  // Broadcast alarm event mới tới tất cả client
+  broadcastAlarm(alarm: any) {
+    this.server.emit('alarm', alarm);
   }
 }

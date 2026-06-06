@@ -8,55 +8,68 @@ export interface ThresholdResult {
 
 @Injectable()
 export class VibrationWindowService {
-  // Quản lý thời điểm vượt ngưỡng của từng cảm biến
-  private exceedanceStarts = new Map<string, Date>();
+  private alertWindowMap = new Map<string, Date[]>();
 
   evaluate(
     sensorId: string,
     ppv: number,
-    timestamp: Date,
+    timestamp: Date | string, // Chấp nhận cả chuỗi từ Postman gửi lên
     thresholdConfig: {
+      warnHigh: number;
       alertHigh: number;
       criticalHigh: number;
-      warnHigh: number;
-      sustainedSeconds: number;
+      alertMinCount: number;
     },
   ): ThresholdResult {
-    const alertThreshold = thresholdConfig.alertHigh;
-    const criticalThreshold = thresholdConfig.criticalHigh;
-    const warnThreshold = thresholdConfig.warnHigh;
-    const sustainedSeconds = thresholdConfig.sustainedSeconds || 3;
+    const { warnHigh, alertHigh, criticalHigh, alertMinCount = 4 } = thresholdConfig;
+    const WINDOW_SIZE_MS = 10000; // Định nghĩa cửa sổ trượt 10 giây
 
-    // 1. Kiểm tra mức nguy cấp (CRITICAL) - Kích hoạt ngay lập tức
-    if (ppv >= criticalThreshold) {
-      this.exceedanceStarts.delete(sensorId); // Xóa thời gian trượt vì đã rơi vào nguy cấp lập tức
+    // Đảm bảo timestamp luôn là đối tượng Date chuẩn (Fix lỗi nhận chuỗi từ Postman)
+    const currentTimestamp = timestamp instanceof Date ? timestamp : new Date(timestamp);
+
+    // 1. KIỂM TRA MỨC NGUY CẤP (CRITICAL) - Đạt ngưỡng nguy hiểm là kích hoạt lập tức
+    if (ppv >= criticalHigh) {
       return { breach: true, severity: 'CRITICAL', durationMs: 0 };
     }
 
-    // 2. Kiểm tra mức báo động (ALERT) - Cần duy trì liên tục
-    if (ppv >= alertThreshold) {
-      if (!this.exceedanceStarts.has(sensorId)) {
-        this.exceedanceStarts.set(sensorId, timestamp);
-      }
-      
-      const startTime = this.exceedanceStarts.get(sensorId)!;
-      const durationMs = timestamp.getTime() - startTime.getTime();
-      
-      if (durationMs >= sustainedSeconds * 1000) {
+    // Khởi tạo cửa sổ lưu trữ cho cảm biến nếu chưa có
+    if (!this.alertWindowMap.has(sensorId)) {
+      this.alertWindowMap.set(sensorId, []);
+    }
+    let breachTimestamps = this.alertWindowMap.get(sensorId)!;
+
+    // Tiến hành "Trượt" cửa sổ: Loại bỏ phần tử quá 10 giây so với gói tin hiện tại
+    const cutoffTime = currentTimestamp.getTime() - WINDOW_SIZE_MS;
+    breachTimestamps = breachTimestamps.filter(t => t.getTime() >= cutoffTime);
+    this.alertWindowMap.set(sensorId, breachTimestamps);
+
+    // 2. KIỂM TRA MỨC BÁO ĐỘNG (ALERT)
+    // CHỈ VÀO ĐÂY KHI bản thân dữ liệu hiện tại thực sự lớn hơn hoặc bằng ngưỡng Alert
+    if (ppv >= alertHigh) {
+      // Ghi nhận mốc thời gian lỗi mới vào mảng
+      breachTimestamps.push(currentTimestamp);
+      this.alertWindowMap.set(sensorId, breachTimestamps);
+
+      // Tính toán độ dài thời gian từ điểm lỗi đầu tiên đến hiện tại trong cửa sổ
+      const durationMs = currentTimestamp.getTime() - breachTimestamps[0].getTime();
+
+      // Kiểm tra mật độ lỗi trong cửa sổ 10s
+      if (breachTimestamps.length >= alertMinCount) {
         return { breach: true, severity: 'ALERT', durationMs };
       }
-      
-      return { breach: false, severity: 'WARNING', durationMs }; // Rung động cao nhưng chưa đủ lâu
-    } 
-    
-    // 3. Kiểm tra mức theo dõi (WARNING)
-    if (ppv >= warnThreshold) {
-      this.exceedanceStarts.delete(sensorId); // Reset thời điểm báo động
+
+      // Biên độ vượt ngưỡng ALERT nhưng tần suất xuất hiện chưa đủ dày đặc trong 10s
+      return { breach: false, severity: 'WARNING', durationMs };
+    }
+
+    // 3. KIỂM TRA MỨC THEO DÕI (WARNING)
+    // Áp dụng cho các gói tin nằm trong khoảng từ [warnHigh -> alertHigh)
+    if (ppv >= warnHigh) {
       return { breach: false, severity: 'WARNING', durationMs: 0 };
     }
 
-    // 4. Bình thường (NORMAL)
-    this.exceedanceStarts.delete(sensorId); // Reset hoàn toàn
+    // 4. TRẠNG THÁI BÌNH THƯỜNG (NORMAL)
+    // Gói tin có biên độ thấp (như 0.25 hay 0.61) sẽ luôn rơi thẳng xuống đây
     return { breach: false, severity: 'NORMAL', durationMs: 0 };
   }
 }

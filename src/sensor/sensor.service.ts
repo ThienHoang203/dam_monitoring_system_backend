@@ -128,7 +128,7 @@ export class SensorService implements OnModuleInit {
           alertHigh: vibConfig.alertHigh,
           criticalHigh: vibConfig.criticalHigh,
           warnHigh: vibConfig.warnHigh,
-          sustainedSeconds: vibConfig.sustainedSeconds,
+          alertMinCount: 4
         }
       );
 

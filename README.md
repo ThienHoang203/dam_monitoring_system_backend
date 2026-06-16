@@ -1,98 +1,308 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Dam Monitoring System — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Hệ thống backend giám sát đập thủy lợi theo thời gian thực, xây dựng bằng **NestJS**, **TimescaleDB** và **WebSocket**.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Mục lục
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- [Kiến trúc tổng quan](#kiến-trúc-tổng-quan)
+- [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
+- [Cài đặt và chạy](#cài-đặt-và-chạy)
+  - [1. Clone dự án](#1-clone-dự-án)
+  - [2. Cài đặt dependencies](#2-cài-đặt-dependencies)
+  - [3. Cấu hình biến môi trường](#3-cấu-hình-biến-môi-trường)
+  - [4. Khởi động dịch vụ hạ tầng (Docker)](#4-khởi-động-dịch-vụ-hạ-tầng-docker)
+  - [5. Chạy ứng dụng](#5-chạy-ứng-dụng)
+- [Cấu trúc dự án](#cấu-trúc-dự-án)
+- [API Endpoints](#api-endpoints)
+- [WebSocket](#websocket)
+- [Các lệnh hữu ích](#các-lệnh-hữu-ích)
 
-## Project setup
+---
 
-```bash
-$ npm install
+## Kiến trúc tổng quan
+
+```
+Jetson TX2 (cảm biến vật lý)
+        │
+        │  HTTP POST /sensor/all
+        ▼
+┌─────────────────────────┐
+│     NestJS Backend      │  :3000
+│  - SensorController     │
+│  - SensorService        │
+│  - VibrationWindow      │
+│  - Downsampler          │
+│  - SensorGateway (WS)   │
+└────────┬────────────────┘
+         │                 │
+         ▼                 ▼
+  TimescaleDB         WebSocket Clients
+  (PostgreSQL)        (Dashboard / Frontend)
+  :5432
+
+MinIO (lưu ảnh/file)   pgweb (quản lý DB)
+:9000 / :9001          :8081
 ```
 
-## Compile and run the project
+---
+
+## Yêu cầu hệ thống
+
+| Công cụ        | Phiên bản tối thiểu | Ghi chú                        |
+|----------------|---------------------|-------------------------------|
+| Node.js        | >= 18.x             | Khuyến nghị dùng LTS           |
+| npm            | >= 9.x              | Đi kèm Node.js                 |
+| Docker         | >= 24.x             | Để chạy TimescaleDB & MinIO    |
+| Docker Compose | >= 2.x              | `docker compose` (không dấu -) |
+
+> **Kiểm tra nhanh:**
+> ```bash
+> node -v
+> npm -v
+> docker -v
+> docker compose version
+> ```
+
+---
+
+## Cài đặt và chạy
+
+### 1. Clone dự án
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+git clone <repository-url>
+cd dam_monitoring_system_backend
 ```
 
-## Run tests
+### 2. Cài đặt dependencies
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm install
 ```
 
-## Deployment
+### 3. Cấu hình biến môi trường
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Tạo file `.env` ở thư mục gốc (hoặc chỉnh sửa file `.env` có sẵn):
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+```env
+# Database (TimescaleDB / PostgreSQL)
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=postgres
+DB_NAME=dam_monitoring
+
+# MinIO (lưu trữ file / ảnh)
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_BUCKET=dam-images
+
+# Jetson TX2 (thiết bị cảm biến vật lý)
+JETSON_TX2_URL=http://localhost:8080
+
+# Cổng ứng dụng (mặc định 3000)
+PORT=3000
+```
+
+> ⚠️ **Lưu ý:** Không commit file `.env` chứa thông tin nhạy cảm lên Git.
+
+### 4. Khởi động dịch vụ hạ tầng (Docker)
+
+Lệnh này sẽ khởi động **TimescaleDB**, **MinIO** và **pgweb**:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+docker compose up -d
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Kiểm tra các container đang chạy:
 
-## Resources
+```bash
+docker compose ps
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+Kết quả mong đợi:
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```
+NAME               STATUS          PORTS
+dam_timescaledb    Up              0.0.0.0:5432->5432/tcp
+dam_minio          Up              0.0.0.0:9000->9000/tcp, 0.0.0.0:9001->9001/tcp
+dam_pgweb          Up              0.0.0.0:8081->8081/tcp
+```
 
-## Support
+**Truy cập các dịch vụ:**
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+| Dịch vụ        | URL                           | Thông tin đăng nhập              |
+|----------------|-------------------------------|----------------------------------|
+| TimescaleDB    | `localhost:5432`              | user: `postgres` / pw: `postgres`|
+| MinIO Console  | http://localhost:9001         | user: `minioadmin` / pw: `minioadmin` |
+| pgweb (DB GUI) | http://localhost:8081         | Tự động kết nối DB               |
 
-## Stay in touch
+### 5. Chạy ứng dụng
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+**Môi trường Development (có hot-reload):**
 
-## License
+```bash
+npm run start:dev
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Môi trường Production:**
+
+```bash
+npm run build
+npm run start:prod
+```
+
+Sau khi khởi động thành công, console hiện:
+
+```
+Application is running on: http://[::1]:3000
+```
+
+Backend đang lắng nghe tại: **http://localhost:3000**
+
+---
+
+## Cấu trúc dự án
+
+```
+src/
+├── main.ts                        # Điểm khởi động ứng dụng
+├── app.module.ts                  # Module gốc (DB, Config, Schedule)
+│
+├── sensor/                        # Module xử lý cảm biến
+│   ├── sensor.module.ts
+│   ├── sensor.controller.ts       # REST API endpoints
+│   ├── sensor.service.ts          # Business logic chính
+│   ├── sensor.dto.ts              # Data Transfer Object
+│   ├── sensor-buffer.service.ts   # Buffer dữ liệu in-memory
+│   ├── vibration-window.service.ts# Xử lý cửa sổ rung động
+│   ├── downsampler.service.ts     # Giảm mẫu dữ liệu
+│   └── entities/
+│       ├── sensor-reading.entity.ts   # Bảng lưu giá trị cảm biến
+│       ├── threshold-config.entity.ts # Cấu hình ngưỡng cảnh báo
+│       └── alarm-event.entity.ts      # Sự kiện cảnh báo
+│
+└── gateway/                       # WebSocket Gateway
+    └── sensor.gateway.ts          # Broadcast realtime tới clients
+```
+
+---
+
+## API Endpoints
+
+Base URL: `http://localhost:3000`
+
+### Sensor
+
+| Method | Endpoint                      | Mô tả                                      |
+|--------|-------------------------------|--------------------------------------------|
+| `POST` | `/sensor/all`                 | Nhận dữ liệu từ thiết bị cảm biến         |
+| `GET`  | `/sensor/latest`              | Lấy dữ liệu mới nhất + lịch sử in-memory  |
+| `GET`  | `/sensor/history/long-term`   | Lịch sử dài hạn từ TimescaleDB            |
+| `GET`  | `/sensor/thresholds`          | Lấy cấu hình ngưỡng cảnh báo              |
+| `PUT`  | `/sensor/thresholds/:id`      | Cập nhật cấu hình ngưỡng                  |
+
+#### POST `/sensor/all` — Payload mẫu
+
+```json
+{
+  "freq": 2.5,
+  "amp": 0.03,
+  "waterLevel": 85.4,
+  "moisture": 62.1
+}
+```
+
+#### GET `/sensor/history/long-term` — Query params
+
+```
+?type=waterLevel&limit=100
+```
+
+Các giá trị `type` hợp lệ: `waterLevel`, `moisture`, `freq`, `amp`
+
+#### GET `/sensor/thresholds` — Query params
+
+```
+?damId=dam_1
+```
+
+---
+
+## WebSocket
+
+Backend phát sự kiện realtime qua **Socket.IO**.
+
+**Kết nối:** `ws://localhost:3000`
+
+**Sự kiện lắng nghe (client ← server):**
+
+| Sự kiện         | Mô tả                                         |
+|-----------------|-----------------------------------------------|
+| `sensorUpdate`  | Dữ liệu cảm biến mới nhất sau mỗi lần ingest  |
+
+**Ví dụ kết nối từ frontend:**
+
+```javascript
+import { io } from 'socket.io-client';
+
+const socket = io('http://localhost:3000');
+
+socket.on('sensorUpdate', (data) => {
+  console.log('Dữ liệu mới:', data);
+});
+```
+
+---
+
+## Các lệnh hữu ích
+
+```bash
+# Chạy development (hot-reload)
+npm run start:dev
+
+# Build production
+npm run build
+
+# Chạy production
+npm run start:prod
+
+# Chạy unit tests
+npm run test
+
+# Chạy test với coverage
+npm run test:cov
+
+# Format code
+npm run format
+
+# Lint & auto-fix
+npm run lint
+
+# Xem log Docker
+docker compose logs -f
+
+# Dừng toàn bộ Docker services
+docker compose down
+
+# Xóa toàn bộ data Docker (reset DB)
+docker compose down -v
+```
+
+---
+
+## Xử lý sự cố thường gặp
+
+**Lỗi kết nối DB (`ECONNREFUSED 5432`):**
+- Đảm bảo Docker đang chạy: `docker compose ps`
+- Chờ ~10 giây sau khi `docker compose up -d` để TimescaleDB khởi động hoàn toàn
+
+**Lỗi `relation does not exist`:**
+- Ứng dụng dùng `synchronize: true` nên bảng được tự động tạo khi khởi động
+- Kiểm tra lại biến `DB_NAME` trong `.env` có khớp với Docker không
+
+**Cổng 3000 đã bị dùng:**
+- Đổi biến `PORT` trong `.env`: `PORT=3001`

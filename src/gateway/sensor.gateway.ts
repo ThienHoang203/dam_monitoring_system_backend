@@ -29,6 +29,7 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(_client: Socket) {}
 
   broadcastUpdate(snapshot: SensorSnapshot) {
+    console.log('Broadcasting update to clients:', snapshot);
     this.server.emit('update', snapshot);
   }
 }

@@ -14,6 +14,8 @@ import { SensorService } from './sensor.service';
 import { SensorDataDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
 import { AlarmEvent } from './entities/alarm-event.entity';
+import { MessagePattern, Payload } from '@nestjs/microservices';
+
 
 @Controller('sensor')
 export class SensorController {
@@ -63,6 +65,34 @@ export class SensorController {
 
     return { ok: true };
   }
+
+  @MessagePattern('dam/sensor/all')
+  async ingestMqtt(@Payload() dto: SensorDataDto) {
+    if (
+      dto.freq == null ||
+      dto.amp == null ||
+      dto.waterLevel == null ||
+      dto.moisture == null
+    ) {
+      console.warn('[MQTT] Nhận payload lỗi hoặc thiếu trường dữ liệu cảm biến.');
+      return { ok: false, error: 'Missing required sensor fields' };
+    }
+
+    try {
+      const { snapshot, alarms } = await this.sensorService.ingest(dto);
+      this.gateway.broadcastUpdate(snapshot);
+
+      // Broadcast từng alarm event mới qua WebSocket
+      for (const alarm of alarms) {
+        this.gateway.broadcastAlarm(alarm);
+      }
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT] Lỗi ingest data:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
 
   @Get('latest')
   getLatest() {

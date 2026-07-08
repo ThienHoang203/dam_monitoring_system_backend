@@ -52,7 +52,19 @@ services:
     depends_on:
       - timescaledb
 
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: dam_mosquitto
+    restart: always
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
 volumes:
   timescaledb_data:
   minio_data:
+
 

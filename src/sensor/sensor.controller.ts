@@ -9,16 +9,39 @@ import {
   Query,
   BadRequestException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SensorService } from './sensor.service';
 import { SensorDataDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
+import { AlarmEvent } from './entities/alarm-event.entity';
+import { MessagePattern, Payload } from '@nestjs/microservices';
+
 
 @Controller('sensor')
 export class SensorController {
   constructor(
     private readonly sensorService: SensorService,
     private readonly gateway: SensorGateway,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Rewrite imageUrl trong alarm để luôn dùng MINIO_ENDPOINT hiện tại.
+   * Khi đổi mạng WiFi (IP thay đổi), chỉ cần sửa MINIO_ENDPOINT trong .env.
+   */
+  private rewriteImageUrl(alarm: AlarmEvent): AlarmEvent {
+    if (!alarm.imageUrl) return alarm;
+    try {
+      const currentEndpoint = this.configService.get<string>('MINIO_ENDPOINT', 'http://localhost:9000');
+      const oldUrl = new URL(alarm.imageUrl);
+      const newBase = new URL(currentEndpoint);
+      oldUrl.protocol = newBase.protocol;
+      oldUrl.host = newBase.host;
+      return { ...alarm, imageUrl: oldUrl.toString() };
+    } catch {
+      return alarm;
+    }
+  }
 
   @Post('all')
   @HttpCode(200)
@@ -42,6 +65,34 @@ export class SensorController {
 
     return { ok: true };
   }
+
+  @MessagePattern('dam/sensor/all')
+  async ingestMqtt(@Payload() dto: SensorDataDto) {
+    if (
+      dto.freq == null ||
+      dto.amp == null ||
+      dto.waterLevel == null ||
+      dto.moisture == null
+    ) {
+      console.warn('[MQTT] Nhận payload lỗi hoặc thiếu trường dữ liệu cảm biến.');
+      return { ok: false, error: 'Missing required sensor fields' };
+    }
+
+    try {
+      const { snapshot, alarms } = await this.sensorService.ingest(dto);
+      this.gateway.broadcastUpdate(snapshot);
+
+      // Broadcast từng alarm event mới qua WebSocket
+      for (const alarm of alarms) {
+        this.gateway.broadcastAlarm(alarm);
+      }
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT] Lỗi ingest data:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
 
   @Get('latest')
   getLatest() {
@@ -102,14 +153,14 @@ export class SensorController {
       severity || undefined,
       resolvedFlag,
     );
-    return { alarms };
+    return { alarms: alarms.map(a => this.rewriteImageUrl(a)) };
   }
 
   // Đánh dấu sự kiện cảnh báo đã xử lý
   @Put('alarms/:id/resolve')
   async resolveAlarmEvent(@Param('id') id: string) {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
-    return { ok: true, data: resolved };
+    return { ok: true, data: this.rewriteImageUrl(resolved) };
   }
 
   // Nhận kết quả từ Camera AI và cập nhật báo động
@@ -121,7 +172,8 @@ export class SensorController {
     console.log(`[AI-Result] Nhận kết quả AI cho alarm ${id}:`, JSON.stringify(body));
     const updated = await this.sensorService.updateAlarmEventAiResult(id, body);
     console.log(`[AI-Result] Đã cập nhật DB, imageUrl = ${updated.imageUrl}`);
-    this.gateway.broadcastAlarm(updated);
-    return { ok: true, data: updated };
+    const rewritten = this.rewriteImageUrl(updated);
+    this.gateway.broadcastAlarm(rewritten);
+    return { ok: true, data: rewritten };
   }
 }

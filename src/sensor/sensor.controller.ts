@@ -176,4 +176,17 @@ export class SensorController {
     this.gateway.broadcastAlarm(rewritten);
     return { ok: true, data: rewritten };
   }
+
+  // Gửi Email thông báo khẩn cấp từ Admin
+  @Post('send-email-alert')
+  async sendEmailAlert(
+    @Body() body: { toEmail: string | string[]; subject?: string; message: string; alarmId?: string }
+  ) {
+    if (!body.message) {
+      throw new BadRequestException('Nội dung thông báo (message) không được để trống');
+    }
+    const result = await this.sensorService.sendEmailAlert(body);
+    return result;
+  }
 }
+

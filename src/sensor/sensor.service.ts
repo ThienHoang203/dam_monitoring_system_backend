@@ -8,6 +8,7 @@ import { ThresholdConfig } from './entities/threshold-config.entity';
 import { AlarmEvent } from './entities/alarm-event.entity';
 import { SensorBufferService } from './sensor-buffer.service';
 import { VibrationWindowService } from './vibration-window.service';
+import * as nodemailer from 'nodemailer';
 
 const MAX_HISTORY = 60;
 const DEFAULT_DAM_ID = 'dam_1';
@@ -301,8 +302,8 @@ export class SensorService implements OnModuleInit {
     event.durationS = durationS;
     event.notes = notes;
 
-    // Nếu là mức CRITICAL hoặc ALERT, chuẩn bị trigger camera AI (sẽ được dispatch sau)
-    if (severity === 'ALERT' || severity === 'CRITICAL') {
+    // Chỉ kích hoạt Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
+    if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
       event.cameraActivated = true;
     }
 
@@ -353,5 +354,119 @@ export class SensorService implements OnModuleInit {
       );
     }
   }
+
+  async sendEmailAlert(payload: {
+    toEmail: string | string[];
+    subject?: string;
+    message: string;
+    alarmId?: string;
+  }): Promise<{ success: boolean; message: string }> {
+    const host = this.configService.get<string>('SMTP_HOST', 'smtp.gmail.com');
+    const port = this.configService.get<number>('SMTP_PORT', 587);
+    const user = this.configService.get<string>('SMTP_USER', '');
+    const pass = this.configService.get<string>('SMTP_PASS', '');
+
+    let rawEmail = payload.toEmail;
+    if (Array.isArray(rawEmail)) {
+      rawEmail = rawEmail.filter(e => Boolean(e && e.trim())).join(', ');
+    }
+    const targetEmail = rawEmail || this.configService.get<string>('DEFAULT_ALERT_EMAIL', 'ruka13312002@gmail.com');
+    const emailSubject = payload.subject || `[CẢNH BÁO KHẨN CẤP] Thông báo chỉ đạo từ Ban Quản lý Hồ Đập`;
+
+    // Tìm thông tin sự kiện cảnh báo từ DB nếu có alarmId
+    let alarmInfo: AlarmEvent | null = null;
+    if (payload.alarmId) {
+      try {
+        alarmInfo = await this.alarmEventRepo.findOne({ where: { id: payload.alarmId } });
+      } catch (e) {
+        console.warn('[SensorService] Không thể tải thông tin alarmId:', payload.alarmId);
+      }
+    }
+
+    const locationText = alarmInfo
+      ? `Trạm ${alarmInfo.sensorId === 'sensor_node_1' ? 'K25+500 (Thân đập chính Đan Phượng)' : alarmInfo.sensorId} - Đập ${alarmInfo.damId}`
+      : 'Trạm K25+500 - Thân đập chính Đan Phượng (sensor_node_1)';
+
+    console.log(`[SensorService] Đang chuẩn bị gửi Email cảnh báo tới: ${targetEmail} cho vị trí: ${locationText}`);
+
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
+        <div style="background-color: #dc2626; color: #ffffff; padding: 20px; text-align: center;">
+          <h1 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 1px;">🚨 CẢNH BÁO AN TOÀN HỒ ĐẬP</h1>
+          <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Hệ thống Giám sát & Điều hành Khẩn cấp Hồ đập Thủy lợi</p>
+        </div>
+        <div style="padding: 24px;">
+          <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 14px; margin-bottom: 20px; border-radius: 4px;">
+            <p style="margin: 0; color: #991b1b; font-weight: bold; font-size: 14px;">Thông điệp chỉ đạo từ Admin Trực ban:</p>
+            <p style="margin: 8px 0 0 0; color: #7f1d1d; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${payload.message}</p>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;">
+            <tr style="border-bottom: 1px solid #f0f0f0;">
+              <td style="padding: 10px; font-weight: bold; color: #555; width: 40%;">📍 Địa điểm đặt cảm biến:</td>
+              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${locationText}</td>
+            </tr>
+            ${alarmInfo ? `
+            <tr style="border-bottom: 1px solid #f0f0f0;">
+              <td style="padding: 10px; font-weight: bold; color: #555;">📊 Thông số đo được:</td>
+              <td style="padding: 10px; color: #111; font-weight: bold;">${alarmInfo.sensorType.toUpperCase()}: ${alarmInfo.measuredVal} (Ngưỡng: ${alarmInfo.thresholdVal})</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #f0f0f0;">
+              <td style="padding: 10px; font-weight: bold; color: #555;">⚠️ Mức độ cảnh báo:</td>
+              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${alarmInfo.severity}</td>
+            </tr>
+            ` : ''}
+            <tr style="border-bottom: 1px solid #f0f0f0;">
+              <td style="padding: 10px; font-weight: bold; color: #555;">🕒 Thời điểm ghi nhận:</td>
+              <td style="padding: 10px; color: #111;">${new Date().toLocaleString('vi-VN')}</td>
+            </tr>
+            
+          </table>
+          <div style="text-align: center; margin-top: 25px;">
+            <a href="http://localhost:3000/alerts" style="background-color: #dc2626; color: #ffffff; padding: 12px 24px; text-decoration: none; font-weight: bold; font-size: 13px; border-radius: 6px; display: inline-block;">TRUY CẬP BẢN ĐỒ GIÁM SÁT VỊ TRÍ</a>
+          </div>
+        </div>
+        <div style="background-color: #f9fafb; padding: 14px; text-align: center; font-size: 11px; color: #6b7280; border-top: 1px solid #f0f0f0;">
+          Email tự động từ Hệ thống Cảnh báo Hồ đập Thủy lợi.
+        </div>
+      </div>
+    `;
+
+    try {
+      if (!user || pass === 'app_password_here') {
+        console.warn('[SensorService] SMTP chưa được cấu hình mật khẩu thực tế trong .env. Đã ghi nhận lệnh gửi email giả lập thành công.');
+        return {
+          success: true,
+          message: `Đã giả lập gửi Email thành công tới ${targetEmail} (Vui lòng cấu hình SMTP_PASS trong .env để gửi Email thật).`,
+        };
+      }
+
+      const info = await transporter.sendMail({
+        from: `"Hệ thống Giám sát Hồ đập" <${user}>`,
+        to: targetEmail,
+        subject: emailSubject,
+        html: htmlBody,
+      });
+
+      console.log(`[SensorService] Đã gửi Email thành công! MessageId: ${info.messageId}`);
+      return {
+        success: true,
+        message: `Đã gửi Email cảnh báo thành công tới ${targetEmail}!`,
+      };
+    } catch (err: any) {
+      console.error('[SensorService] Lỗi khi gửi Email qua SMTP:', err);
+      return {
+        success: false,
+        message: `Không thể gửi Email: ${err.message || 'Lỗi kết nối máy chủ SMTP'}`,
+      };
+    }
+  }
 }
+
 

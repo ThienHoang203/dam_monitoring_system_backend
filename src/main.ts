@@ -7,7 +7,7 @@ async function bootstrap() {
   app.enableCors({
     origin: '*',
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
-    allowHeaders: 'Content-Type',
+    allowHeaders: ['Content-Type', 'ngrok-skip-browser-warning'],
   });
 
   const mqttBrokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';

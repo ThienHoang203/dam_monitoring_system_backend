@@ -302,8 +302,8 @@ export class SensorService implements OnModuleInit {
     event.durationS = durationS;
     event.notes = notes;
 
-    // Nếu là mức CRITICAL hoặc ALERT, chuẩn bị trigger camera AI (sẽ được dispatch sau)
-    if (severity === 'ALERT' || severity === 'CRITICAL') {
+    // Chỉ kích hoạt Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
+    if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
       event.cameraActivated = true;
     }
 

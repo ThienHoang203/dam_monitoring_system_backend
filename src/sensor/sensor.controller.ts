@@ -8,6 +8,8 @@ import {
   Param,
   Query,
   BadRequestException,
+  Req,
+  Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SensorService } from './sensor.service';
@@ -23,23 +25,91 @@ export class SensorController {
     private readonly sensorService: SensorService,
     private readonly gateway: SensorGateway,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   /**
-   * Rewrite imageUrl trong alarm để luôn dùng MINIO_ENDPOINT hiện tại.
-   * Khi đổi mạng WiFi (IP thay đổi), chỉ cần sửa MINIO_ENDPOINT trong .env.
+   * Rewrite imageUrl trong alarm:
+   * 1. Ưu tiên dùng MINIO_PUBLIC_ENDPOINT nếu cấu hình Ngrok riêng cho MinIO.
+   * 2. Nếu không, chuyển sang endpoint proxy /sensor/images/... trên Backend.
    */
   private rewriteImageUrl(alarm: AlarmEvent): AlarmEvent {
-    if (!alarm.imageUrl) return alarm;
+    if (!alarm || !alarm.imageUrl) return alarm;
     try {
-      const currentEndpoint = this.configService.get<string>('MINIO_ENDPOINT', 'http://localhost:9000');
-      const oldUrl = new URL(alarm.imageUrl);
-      const newBase = new URL(currentEndpoint);
-      oldUrl.protocol = newBase.protocol;
-      oldUrl.host = newBase.host;
-      return { ...alarm, imageUrl: oldUrl.toString() };
+      const publicEndpoint = this.configService.get<string>('MINIO_PUBLIC_ENDPOINT');
+      if (publicEndpoint && publicEndpoint.trim() !== '') {
+        const cleanBase = publicEndpoint.trim().replace(/\/+$/, '');
+        let subPath = alarm.imageUrl;
+        if (subPath.includes('/dam-images/')) {
+          subPath = `/dam-images/${subPath.split('/dam-images/')[1]}`;
+        } else if (subPath.startsWith('http://') || subPath.startsWith('https://')) {
+          subPath = new URL(subPath).pathname;
+        }
+        return { ...alarm, imageUrl: `${cleanBase}${subPath}` };
+      }
+
+      let imgPath = alarm.imageUrl;
+      if (imgPath.includes('/dam-images/')) {
+        const parts = imgPath.split('/dam-images/');
+        imgPath = `/sensor/images/${parts[1]}`;
+      } else if (imgPath.startsWith('http://') || imgPath.startsWith('https://')) {
+        const urlObj = new URL(imgPath);
+        let pathName = urlObj.pathname;
+        if (pathName.startsWith('/dam-images/')) {
+          pathName = pathName.replace('/dam-images/', '/sensor/images/');
+        } else if (!pathName.startsWith('/sensor/images/')) {
+          pathName = `/sensor/images${pathName}`;
+        }
+        imgPath = pathName;
+      } else if (!imgPath.startsWith('/sensor/images/')) {
+        imgPath = `/sensor/images/${imgPath.replace(/^\/+/, '')}`;
+      }
+
+      return { ...alarm, imageUrl: imgPath };
     } catch {
       return alarm;
+    }
+  }
+
+  /**
+   * Endpoint Proxy ảnh từ MinIO nội bộ cho trình duyệt ở mọi thiết bị (LAN, Mobile, Ngrok)
+   * GET /sensor/images/*
+   */
+  @Get('images/*')
+  async getProxyImage(@Req() req: any, @Res() res: any) {
+    try {
+      const reqUrl = req.url || '';
+      const imageSubPath = reqUrl.replace(/^\/sensor\/images\//, '').split('?')[0];
+
+      if (!imageSubPath) {
+        return res.status(400).send('Bad Request: Missing image path');
+      }
+
+      const minioEndpoint =
+        this.configService.get<string>('MINIO_INTERNAL_ENDPOINT') ||
+        this.configService.get<string>('MINIO_ENDPOINT', 'http://127.0.0.1:9000');
+      const bucket = this.configService.get<string>('MINIO_BUCKET', 'dam-images');
+
+      const cleanMinioBase = minioEndpoint.replace(/\/+$/, '');
+      const cleanSubPath = imageSubPath.startsWith(`${bucket}/`)
+        ? imageSubPath
+        : `${bucket}/${imageSubPath.replace(/^\/+/, '')}`;
+
+      const targetUrl = `${cleanMinioBase}/${cleanSubPath}`;
+
+      const fetchRes = await fetch(targetUrl);
+      if (!fetchRes.ok) {
+        return res.status(fetchRes.status).send('Image not found in storage');
+      }
+
+      const contentType = fetchRes.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache 24h
+
+      const arrayBuffer = await fetchRes.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    } catch (error: any) {
+      console.error('[ProxyImage] Lỗi khi lấy ảnh từ MinIO:', error.message);
+      return res.status(500).send('Internal Server Error');
     }
   }
 
@@ -60,7 +130,7 @@ export class SensorController {
 
     // Broadcast từng alarm event mới qua WebSocket
     for (const alarm of alarms) {
-      this.gateway.broadcastAlarm(alarm);
+      this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
     }
 
     return { ok: true };
@@ -84,7 +154,7 @@ export class SensorController {
 
       // Broadcast từng alarm event mới qua WebSocket
       for (const alarm of alarms) {
-        this.gateway.broadcastAlarm(alarm);
+        this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
       }
       return { ok: true };
     } catch (error: any) {

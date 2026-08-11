@@ -63,6 +63,23 @@ services:
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: dam_ngrok
+    restart: always
+    ports:
+      - "4040:4040"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+      NGROK_DOMAIN: ${BACKEND_NGROK_DOMAIN:-library-opal-degraded.ngrok-free.dev}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "http"
+      - "host.docker.internal:3001"
+
+
+
 volumes:
   timescaledb_data:
   minio_data:

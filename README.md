@@ -139,6 +139,8 @@ dam_pgweb          Up              0.0.0.0:8081->8081/tcp
 | TimescaleDB    | `localhost:5432`              | user: `postgres` / pw: `postgres`|
 | MinIO Console  | http://localhost:9001         | user: `minioadmin` / pw: `minioadmin` |
 | pgweb (DB GUI) | http://localhost:8081         | Tự động kết nối DB               |
+| Ngrok Console  | http://localhost:4040         | Quản lý Live Tunnel & Traffic    |
+
 
 ### 5. Chạy ứng dụng
 

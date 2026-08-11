@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SensorModule } from './sensor/sensor.module';
+import { DamModule } from './dam/dam.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { SensorModule } from './sensor/sensor.module';
       }),
     }),
     SensorModule,
+    DamModule,
   ],
 })
 export class AppModule {}

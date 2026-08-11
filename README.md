@@ -109,12 +109,12 @@ PORT=3000
 
 > ⚠️ **Lưu ý:** Không commit file `.env` chứa thông tin nhạy cảm lên Git.
 
-### 4. Khởi động dịch vụ hạ tầng (Docker)
+### 4. Khởi động toàn bộ ứng dụng và hạ tầng (Docker Compose)
 
-Lệnh này sẽ khởi động **TimescaleDB**, **MinIO** và **pgweb**:
+Chỉ cần 1 lệnh duy nhất để build image và khởi động **NestJS Backend**, **TimescaleDB**, **MinIO**, **Mosquitto (MQTT)**, **pgweb** và **Ngrok**:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 Kiểm tra các container đang chạy:
@@ -123,36 +123,23 @@ Kiểm tra các container đang chạy:
 docker compose ps
 ```
 
-Kết quả mong đợi:
-
-```
-NAME               STATUS          PORTS
-dam_timescaledb    Up              0.0.0.0:5432->5432/tcp
-dam_minio          Up              0.0.0.0:9000->9000/tcp, 0.0.0.0:9001->9001/tcp
-dam_pgweb          Up              0.0.0.0:8081->8081/tcp
-```
-
 **Truy cập các dịch vụ:**
 
-| Dịch vụ        | URL                           | Thông tin đăng nhập              |
+| Dịch vụ        | URL                           | Thông tin đăng nhập / Ghi chú    |
 |----------------|-------------------------------|----------------------------------|
+| NestJS Backend | http://localhost:3001         | REST API & WebSocket Server      |
 | TimescaleDB    | `localhost:5432`              | user: `postgres` / pw: `postgres`|
 | MinIO Console  | http://localhost:9001         | user: `minioadmin` / pw: `minioadmin` |
 | pgweb (DB GUI) | http://localhost:8081         | Tự động kết nối DB               |
 | Ngrok Console  | http://localhost:4040         | Quản lý Live Tunnel & Traffic    |
 
+### 5. Cập nhật mã nguồn Backend trong Docker
 
-### 5. Chạy ứng dụng
-
-**Môi trường Development (có hot-reload):**
+Khi bạn sửa đổi code NestJS và muốn rebuild container Backend:
 
 ```bash
-npm run start:dev
+docker compose up -d --build backend
 ```
-
-**Môi trường Production:**
-
-```bash
 npm run build
 npm run start:prod
 ```

@@ -1,297 +1,184 @@
-# Dam Monitoring System — Backend
+# Dam Monitoring System — Backend Service 🌊⚡
 
-Hệ thống backend giám sát đập thủy lợi theo thời gian thực, xây dựng bằng **NestJS**, **TimescaleDB** và **WebSocket**.
-
----
-
-## Mục lục
-
-- [Kiến trúc tổng quan](#kiến-trúc-tổng-quan)
-- [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
-- [Cài đặt và chạy](#cài-đặt-và-chạy)
-  - [1. Clone dự án](#1-clone-dự-án)
-  - [2. Cài đặt dependencies](#2-cài-đặt-dependencies)
-  - [3. Cấu hình biến môi trường](#3-cấu-hình-biến-môi-trường)
-  - [4. Khởi động dịch vụ hạ tầng (Docker)](#4-khởi-động-dịch-vụ-hạ-tầng-docker)
-  - [5. Chạy ứng dụng](#5-chạy-ứng-dụng)
-- [Cấu trúc dự án](#cấu-trúc-dự-án)
-- [API Endpoints](#api-endpoints)
-- [WebSocket](#websocket)
-- [Các lệnh hữu ích](#các-lệnh-hữu-ích)
+Hệ thống backend chuyên dụng cho việc giám sát đập thủy điện và trạm quan trắc theo thời gian thực, tích hợp cảm biến IoT ESP32, xử lý dữ liệu rung động FFT, lưu trữ chuỗi thời gian trên **TimescaleDB / PostgreSQL**, truyền tải dữ liệu qua **MQTT Mosquitto & WebSocket Socket.IO**, và cung cấp RESTful APIs quản lý Đập, Trạm, Cụm cảm biến.
 
 ---
 
-## Kiến trúc tổng quan
+## 📋 Mục lục
+
+1. [Kiến trúc hệ thống tổng quan](#1-kiến-trúc-hệ-thống-tổng-quan)
+2. [Công nghệ sử dụng](#2-công-nghệ-sử-dụng)
+3. [Cơ sở dữ liệu & Thể hiện Thực thể (Entities)](#3-cơ-sở-dữ-liệu--thể-hiện-thực-thể-entities)
+4. [Các quy tắc Validate & Auto-Generation ID](#4-các-quy-tắc-validate--auto-generation-id)
+5. [Cấu hình và Khởi động](#5-cấu-hình-và-khởi-động)
+6. [API Endpoints danh mục](#6-api-endpoints-danh-mục)
+7. [Luồng dữ liệu IoT ESP32 / MQTT / WebSocket](#7-luồng-dữ-liệu-iot-esp32--mqtt--websocket)
+
+---
+
+## 1. Kiến trúc hệ thống tổng quan
 
 ```
-Jetson TX2 (cảm biến vật lý)
-        │
-        │  HTTP POST /sensor/all
-        ▼
-┌─────────────────────────┐
-│     NestJS Backend      │  :3000
-│  - SensorController     │
-│  - SensorService        │
-│  - VibrationWindow      │
-│  - Downsampler          │
-│  - SensorGateway (WS)   │
-└────────┬────────────────┘
-         │                 │
-         ▼                 ▼
-  TimescaleDB         WebSocket Clients
-  (PostgreSQL)        (Dashboard / Frontend)
-  :5432
-
-MinIO (lưu ảnh/file)   pgweb (quản lý DB)
-:9000 / :9001          :8081
+┌─────────────────────────────────────────────────────────────────┐
+│              ESP32 / Physical Sensors (IoT Edge)                │
+│  - MPU6050 (Vibration + FFT)                                   │
+│  - Ultrasonic (Water Level)                                     │
+│  - Soil Moisture Sensor                                         │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │
+                   MQTT / HTTP   │  dam_monitoring/sensor_data
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Mosquitto MQTT Broker                       │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     NestJS Backend Service                      │
+│  - SensorModule (MQTT Subscriber / REST Receiver)               │
+│  - DamModule (Dams & Stations CRUD, Vietnam GPS Coords)         │
+│  - SensorClusterModule (Clusters & Devices CRUD, Memory Cache)  │
+│  - SensorGateway (WebSocket Real-time Broadcaster)              │
+└───────────────┬─────────────────────────────────┬───────────────┘
+                │                                 │
+                ▼                                 ▼
+  TimescaleDB (PostgreSQL)               Next.js Frontend Client
+  Lưu trữ dữ liệu chuỗi thời gian         Giao diện Giám sát Realtime & GIS
 ```
 
 ---
 
-## Yêu cầu hệ thống
+## 2. Công nghệ sử dụng
 
-| Công cụ        | Phiên bản tối thiểu | Ghi chú                        |
-|----------------|---------------------|-------------------------------|
-| Node.js        | >= 18.x             | Khuyến nghị dùng LTS           |
-| npm            | >= 9.x              | Đi kèm Node.js                 |
-| Docker         | >= 24.x             | Để chạy TimescaleDB & MinIO    |
-| Docker Compose | >= 2.x              | `docker compose` (không dấu -) |
-
-> **Kiểm tra nhanh:**
-> ```bash
-> node -v
-> npm -v
-> docker -v
-> docker compose version
-> ```
+- **Framework**: NestJS (Node.js TypeScript framework)
+- **Database**: TimescaleDB / PostgreSQL với TypeORM
+- **Broker IoT**: Eclipse Mosquitto (MQTT Protocol)
+- **Real-time**: Socket.IO Gateway (`@nestjs/platform-socket.io`)
+- **Object Storage**: MinIO (Lưu ảnh camera / file nhật ký)
+- **Xử lý số liệu**: Fast Fourier Transform (FFT) & Dynamic Downsampling
 
 ---
 
-## Cài đặt và chạy
+## 3. Cơ sở dữ liệu & Thể hiện Thực thể (Entities)
 
-### 1. Clone dự án
+### 3.1 Đập Thủy Điện (`Dam`)
+- `id` (string, Primary Key): Slug mã đập tự động (vd: `dam_dap_thuy_dien_hoa_binh`).
+- `name` (string): Tên đập thủy điện.
+- `location` (string): Địa danh / Vị trí hành chính.
+- `latitude` (float): Tọa độ vĩ độ (°N).
+- `longitude` (float): Tọa độ kinh độ (°E).
+- `waterLevel` (float): Mực nước hiện tại (m).
+- `flow` (float): Lưu lượng xả ($m^3/s$).
+- `fillPct` (float): Tỷ lệ dung tích chứa (%).
+- `status` (string): Trang thái (`safe` | `warning` | `danger`).
 
-```bash
-git clone <repository-url>
-cd dam_monitoring_system_backend
-```
+### 3.2 Trạm Quan Trắc (`Station`)
+- `id` (number / string): Mã trạm.
+- `name` (string): Tên trạm quan trắc (vd: `Trạm Tân Ấp 1`).
+- `location` (string): Vị trí trạm.
+- `latitude` (float): Tọa độ vĩ độ (°N).
+- `longitude` (float): Tọa độ kinh độ (°E).
+- `river` (string): Tên dòng sông.
+- `km` (string): Lý trình Km (vd: `K25+500`).
+- `bd1`, `bd2`, `bd3` (float): Ngưỡng báo động 1, 2, 3 (m).
+- `damId` (string, Foreign Key): Mã Đập trực thuộc.
 
-### 2. Cài đặt dependencies
+### 3.3 Cụm Cảm Biến (`SensorCluster`)
+- `id` (string, Primary Key): Slug mã cụm tự động (vd: `cluster_tram_tan_ap_1_k25_500`).
+- `name` (string): Tên cụm cảm biến.
+- `description` (string): Mô tả cụm.
+- `espMacAddress` (string): Địa chỉ MAC cứng của ESP32.
+- `firmwareVersion` (string): Phiên bản Firmware.
+- `installLocation` (string): Vị trí lắp đặt.
+- `stationId` (number, Foreign Key): Mã Trạm trực thuộc.
 
-```bash
-npm install
-```
+---
 
-### 3. Cấu hình biến môi trường
+## 4. Các quy tắc Validate & Auto-Generation ID
 
-Tạo file `.env` ở thư mục gốc (hoặc chỉnh sửa file `.env` có sẵn):
+1. **Auto Slug Generation**:
+   - Khi tạo mới Đập hoặc Cụm cảm biến mà không truyền ID, backend tự động áp dụng hàm `toSlug()` để tạo mã readable tiếng Việt không dấu.
+   - Định dạng Cụm: `cluster_[station_slug]_[location_slug]`.
+   - Định dạng Đập: `dam_[name_slug]`.
+
+2. **Validate Trùng Lặp (409 Conflict)**:
+   - Nếu mã ID đập/cụm đã tồn tại hoặc tên trạm bị trùng trên cùng một đập, backend ném exception `ConflictException (HTTP 409)` ngăn không cho ghi đè dữ liệu.
+
+3. **Memory Isolation**:
+   - Bộ nhớ đệm giữ snapshot dữ liệu độc lập cho từng Cụm (`latestByCluster`) và từng Trạm (`latestByStation`), tránh tình trạng ghi đè chéo dữ liệu giữa các thiết bị.
+
+---
+
+## 5. Cấu hình và Khởi động
+
+### 5.1 Cài đặt môi trường
+Tạo file `.env` tại thư mục gốc:
 
 ```env
-# Database (TimescaleDB / PostgreSQL)
+PORT=3001
 DB_HOST=localhost
 DB_PORT=5432
 DB_USERNAME=postgres
 DB_PASSWORD=postgres
 DB_NAME=dam_monitoring
 
-# MinIO (lưu trữ file / ảnh)
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
 MINIO_ENDPOINT=http://localhost:9000
 MINIO_BUCKET=dam-images
-
-# Jetson TX2 (thiết bị cảm biến vật lý)
-JETSON_TX2_URL=http://localhost:8080
-
-# Cổng ứng dụng (mặc định 3000)
-PORT=3000
 ```
 
-> ⚠️ **Lưu ý:** Không commit file `.env` chứa thông tin nhạy cảm lên Git.
-
-### 4. Khởi động toàn bộ ứng dụng và hạ tầng (Docker Compose)
-
-Chỉ cần 1 lệnh duy nhất để build image và khởi động **NestJS Backend**, **TimescaleDB**, **MinIO**, **Mosquitto (MQTT)**, **pgweb** và **Ngrok**:
+### 5.2 Khởi chạy với Docker Compose
 
 ```bash
+# Khởi chạy Backend, TimescaleDB, MinIO, Mosquitto & Pgweb
 docker compose up -d --build
 ```
 
-Kiểm tra các container đang chạy:
+### 5.3 Khởi chạy thủ công (Development Mode)
 
 ```bash
-docker compose ps
-```
-
-**Truy cập các dịch vụ:**
-
-| Dịch vụ        | URL                           | Thông tin đăng nhập / Ghi chú    |
-|----------------|-------------------------------|----------------------------------|
-| NestJS Backend | http://localhost:3001         | REST API & WebSocket Server      |
-| TimescaleDB    | `localhost:5432`              | user: `postgres` / pw: `postgres`|
-| MinIO Console  | http://localhost:9001         | user: `minioadmin` / pw: `minioadmin` |
-| pgweb (DB GUI) | http://localhost:8081         | Tự động kết nối DB               |
-| Ngrok Console  | http://localhost:4040         | Quản lý Live Tunnel & Traffic    |
-
-### 5. Cập nhật mã nguồn Backend trong Docker
-
-Khi bạn sửa đổi code NestJS và muốn rebuild container Backend:
-
-```bash
-docker compose up -d --build backend
-```
-npm run build
-npm run start:prod
-```
-
-Sau khi khởi động thành công, console hiện:
-
-```
-Application is running on: http://[::1]:3000
-```
-
-Backend đang lắng nghe tại: **http://localhost:3000**
-
----
-
-## Cấu trúc dự án
-
-```
-src/
-├── main.ts                        # Điểm khởi động ứng dụng
-├── app.module.ts                  # Module gốc (DB, Config, Schedule)
-│
-├── sensor/                        # Module xử lý cảm biến
-│   ├── sensor.module.ts
-│   ├── sensor.controller.ts       # REST API endpoints
-│   ├── sensor.service.ts          # Business logic chính
-│   ├── sensor.dto.ts              # Data Transfer Object
-│   ├── sensor-buffer.service.ts   # Buffer dữ liệu in-memory
-│   ├── vibration-window.service.ts# Xử lý cửa sổ rung động
-│   ├── downsampler.service.ts     # Giảm mẫu dữ liệu
-│   └── entities/
-│       ├── sensor-reading.entity.ts   # Bảng lưu giá trị cảm biến
-│       ├── threshold-config.entity.ts # Cấu hình ngưỡng cảnh báo
-│       └── alarm-event.entity.ts      # Sự kiện cảnh báo
-│
-└── gateway/                       # WebSocket Gateway
-    └── sensor.gateway.ts          # Broadcast realtime tới clients
-```
-
----
-
-## API Endpoints
-
-Base URL: `http://localhost:3000`
-
-### Sensor
-
-| Method | Endpoint                      | Mô tả                                      |
-|--------|-------------------------------|--------------------------------------------|
-| `POST` | `/sensor/all`                 | Nhận dữ liệu từ thiết bị cảm biến         |
-| `GET`  | `/sensor/latest`              | Lấy dữ liệu mới nhất + lịch sử in-memory  |
-| `GET`  | `/sensor/history/long-term`   | Lịch sử dài hạn từ TimescaleDB            |
-| `GET`  | `/sensor/thresholds`          | Lấy cấu hình ngưỡng cảnh báo              |
-| `PUT`  | `/sensor/thresholds/:id`      | Cập nhật cấu hình ngưỡng                  |
-
-#### POST `/sensor/all` — Payload mẫu
-
-```json
-{
-  "freq": 2.5,
-  "amp": 0.03,
-  "waterLevel": 85.4,
-  "moisture": 62.1
-}
-```
-
-#### GET `/sensor/history/long-term` — Query params
-
-```
-?type=waterLevel&limit=100
-```
-
-Các giá trị `type` hợp lệ: `waterLevel`, `moisture`, `freq`, `amp`
-
-#### GET `/sensor/thresholds` — Query params
-
-```
-?damId=dam_1
-```
-
----
-
-## WebSocket
-
-Backend phát sự kiện realtime qua **Socket.IO**.
-
-**Kết nối:** `ws://localhost:3000`
-
-**Sự kiện lắng nghe (client ← server):**
-
-| Sự kiện         | Mô tả                                         |
-|-----------------|-----------------------------------------------|
-| `sensorUpdate`  | Dữ liệu cảm biến mới nhất sau mỗi lần ingest  |
-
-**Ví dụ kết nối từ frontend:**
-
-```javascript
-import { io } from 'socket.io-client';
-
-const socket = io('http://localhost:3000');
-
-socket.on('sensorUpdate', (data) => {
-  console.log('Dữ liệu mới:', data);
-});
-```
-
----
-
-## Các lệnh hữu ích
-
-```bash
-# Chạy development (hot-reload)
+npm install
 npm run start:dev
-
-# Build production
-npm run build
-
-# Chạy production
-npm run start:prod
-
-# Chạy unit tests
-npm run test
-
-# Chạy test với coverage
-npm run test:cov
-
-# Format code
-npm run format
-
-# Lint & auto-fix
-npm run lint
-
-# Xem log Docker
-docker compose logs -f
-
-# Dừng toàn bộ Docker services
-docker compose down
-
-# Xóa toàn bộ data Docker (reset DB)
-docker compose down -v
 ```
 
 ---
 
-## Xử lý sự cố thường gặp
+## 6. API Endpoints danh mục
 
-**Lỗi kết nối DB (`ECONNREFUSED 5432`):**
-- Đảm bảo Docker đang chạy: `docker compose ps`
-- Chờ ~10 giây sau khi `docker compose up -d` để TimescaleDB khởi động hoàn toàn
+### 🔴 Đập Thủy Điện (`/dam`)
+- `GET /dam`: Lấy danh sách tất cả đập thủy điện.
+- `GET /dam/:id`: Lấy chi tiết đập theo ID.
+- `POST /dam`: Tạo đập mới (Tự động sinh slug ID, validate trùng 409).
+- `PUT /dam/:id`: Cập nhật thông tin đập / tọa độ GPS.
+- `DELETE /dam/:id`: Xóa đập thủy điện và các trạm phụ thuộc.
 
-**Lỗi `relation does not exist`:**
-- Ứng dụng dùng `synchronize: true` nên bảng được tự động tạo khi khởi động
-- Kiểm tra lại biến `DB_NAME` trong `.env` có khớp với Docker không
+### 📡 Trạm Quan Trắc (`/dam/station`)
+- `GET /dam/station`: Lấy danh sách tất cả trạm.
+- `POST /dam/station`: Tạo trạm quan trắc mới dưới đập chỉ định.
+- `PUT /dam/station/:id`: Cập nhật thông tin trạm / tọa độ / ngưỡng BĐ.
+- `DELETE /dam/station/:id`: Xóa trạm quan trắc.
 
-**Cổng 3000 đã bị dùng:**
-- Đổi biến `PORT` trong `.env`: `PORT=3001`
+### 🛡️ Cụm Cảm Biến (`/sensor-clusters`)
+- `GET /sensor-clusters`: Lấy danh sách cụm cảm biến (hỗ trợ lọc theo `damId` / `stationId`).
+- `POST /sensor-clusters`: Tạo mới cụm cảm biến.
+- `PUT /sensor-clusters/:id`: Cập nhật thông tin cụm cảm biến.
+- `DELETE /sensor-clusters/:id`: Xóa cụm cảm biến.
+- `POST /sensor-clusters/:clusterId/devices`: Thêm cảm biến vào cụm.
+- `PUT /sensor-clusters/:clusterId/devices/:deviceId`: Cập nhật cảm biến.
+- `DELETE /sensor-clusters/:clusterId/devices/:deviceId`: Xóa cảm biến khỏi cụm.
+
+---
+
+## 7. Luồng dữ liệu IoT ESP32 / MQTT / WebSocket
+
+1. **ESP32 Firmware**:
+   - Thu thập dữ liệu rung (MPU6050 + FFT), mực nước (Siêu âm) và độ ẩm đất.
+   - Đóng gói JSON kèm `clusterId`, `damId`, `stationId`.
+   - Phát MQTT payload tới chủ đề `dam_monitoring/sensor_data`.
+
+2. **NestJS Backend**:
+   - Subscribe topic MQTT và giải mã JSON payload.
+   - Cập nhật snapshot dữ liệu vào bộ nhớ đệm `latestByCluster` và `latestByStation`.
+   - Lưu trữ chuỗi thời gian vào TimescaleDB.
+   - Phát sự kiện WebSocket `sensor_update` tới các client Next.js đang mở Dashboard.

@@ -12,6 +12,12 @@ export class Dam {
   @Column({ type: 'varchar', length: 200, nullable: true })
   location: string;
 
+  @Column({ type: 'double precision', nullable: true })
+  latitude: number;
+
+  @Column({ type: 'double precision', nullable: true })
+  longitude: number;
+
   @Column({ type: 'float', default: 0 })
   waterLevel: number;
 

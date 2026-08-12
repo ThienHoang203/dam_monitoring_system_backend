@@ -1,7 +1,9 @@
 export class CreateDamDto {
-  id: string;
+  id?: string;
   name: string;
   location?: string;
+  latitude?: number;
+  longitude?: number;
   waterLevel?: number;
   flow?: number;
   fillPct?: number;
@@ -11,6 +13,8 @@ export class CreateDamDto {
 export class UpdateDamDto {
   name?: string;
   location?: string;
+  latitude?: number;
+  longitude?: number;
   waterLevel?: number;
   flow?: number;
   fillPct?: number;
@@ -20,6 +24,8 @@ export class UpdateDamDto {
 export class CreateStationDto {
   name: string;
   location?: string;
+  latitude?: number;
+  longitude?: number;
   river?: string;
   km?: string;
   status?: string;
@@ -37,6 +43,8 @@ export class CreateStationDto {
 export class UpdateStationDto {
   name?: string;
   location?: string;
+  latitude?: number;
+  longitude?: number;
   river?: string;
   km?: string;
   status?: string;

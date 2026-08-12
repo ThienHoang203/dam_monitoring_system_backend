@@ -1,5 +1,6 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
 import { Dam } from './dam.entity';
+import { SensorCluster } from '../../sensor/entities/sensor-cluster.entity';
 
 @Entity('stations')
 export class Station {
@@ -11,6 +12,12 @@ export class Station {
 
   @Column({ type: 'varchar', length: 200, nullable: true })
   location: string;
+
+  @Column({ type: 'double precision', nullable: true })
+  latitude: number;
+
+  @Column({ type: 'double precision', nullable: true })
+  longitude: number;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
   river: string;
@@ -51,6 +58,9 @@ export class Station {
   @ManyToOne(() => Dam, dam => dam.stations, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'damId' })
   dam: Dam;
+
+  @OneToMany(() => SensorCluster, cluster => cluster.station, { cascade: true })
+  sensorClusters: SensorCluster[];
 
   @CreateDateColumn()
   createdAt: Date;

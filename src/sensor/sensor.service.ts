@@ -8,6 +8,8 @@ import { ThresholdConfig } from './entities/threshold-config.entity';
 import { AlarmEvent } from './entities/alarm-event.entity';
 import { SensorBufferService } from './sensor-buffer.service';
 import { VibrationWindowService } from './vibration-window.service';
+import { Station } from '../dam/entities/station.entity';
+import { SensorClusterService } from './sensor-cluster.service';
 import * as nodemailer from 'nodemailer';
 
 const MAX_HISTORY = 60;
@@ -16,6 +18,8 @@ const DEFAULT_DAM_ID = 'dam_1';
 @Injectable()
 export class SensorService implements OnModuleInit {
   private latest: SensorSnapshot | null = null;
+  private latestByStation: Map<number, SensorSnapshot> = new Map();
+  private latestByCluster: Map<string, SensorSnapshot> = new Map();
 
   private history: SensorHistory = {
     timestamps: [],
@@ -26,6 +30,8 @@ export class SensorService implements OnModuleInit {
     percent: [],
   };
 
+  private historyByStation: Map<number, SensorHistory> = new Map();
+
   constructor(
     @InjectRepository(SensorReading)
     private readonly sensorReadingRepo: Repository<SensorReading>,
@@ -33,9 +39,12 @@ export class SensorService implements OnModuleInit {
     private readonly thresholdConfigRepo: Repository<ThresholdConfig>,
     @InjectRepository(AlarmEvent)
     private readonly alarmEventRepo: Repository<AlarmEvent>,
+    @InjectRepository(Station)
+    private readonly stationRepo: Repository<Station>,
     private readonly bufferService: SensorBufferService,
     private readonly vibrationWindowService: VibrationWindowService,
     private readonly configService: ConfigService,
+    private readonly sensorClusterService: SensorClusterService,
   ) { }
 
   // Khởi tạo ngưỡng mặc định khi khởi động ứng dụng nếu chưa tồn tại
@@ -83,10 +92,34 @@ export class SensorService implements OnModuleInit {
 
   async ingest(dto: SensorDataDto): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
     const timestamp = new Date();
-    const damId = DEFAULT_DAM_ID;
-    const sensorId = 'sensor_node_1';
+    let damId = dto.damId || DEFAULT_DAM_ID;
+    const sensorId = dto.clusterId || 'sensor_node_1';
+    let stationId: number | undefined = dto.stationId;
 
-    // 1. Lấy cấu hình ngưỡng từ database để tính toán động
+    // 1. Nếu có clusterId, tra cứu Cụm cảm biến để tìm Trạm (Station) và Đập (Dam) tương ứng
+    if (dto.clusterId) {
+      await this.sensorClusterService.updateOnlineStatus(dto.clusterId, timestamp);
+      try {
+        const cluster = await this.sensorClusterService.findById(dto.clusterId);
+        if (cluster) {
+          stationId = cluster.stationId;
+          if (cluster.station && cluster.station.damId) {
+            damId = cluster.station.damId;
+          }
+
+          // Cập nhật thông số thời gian thực vào bảng Trạm (Station)
+          await this.stationRepo.update(cluster.stationId, {
+            waterLevel: +dto.waterLevel,
+            humidity: +dto.moisture,
+            bd3: +dto.amp, // Lưu biên độ rung vào chỉ số bd3 của trạm
+          });
+        }
+      } catch (err) {
+        // Cụm chưa đăng ký trong DB — tiếp tục fallback mặc định
+      }
+    }
+
+    // 2. Lấy cấu hình ngưỡng từ database để tính toán động
     const configs = await this.thresholdConfigRepo.find({ where: { damId } });
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
     const vibConfig = configs.find(c => c.sensorType === 'vibration');
@@ -96,6 +129,9 @@ export class SensorService implements OnModuleInit {
     const calculatedPercent = +((dto.waterLevel / tankHeight) * 100).toFixed(1);
 
     const snapshot: SensorSnapshot = {
+      clusterId: dto.clusterId,
+      stationId,
+      damId,
       freq: +dto.freq,
       amp: +dto.amp,
       waterLevel: +dto.waterLevel,
@@ -105,6 +141,12 @@ export class SensorService implements OnModuleInit {
     };
 
     this.latest = snapshot;
+    if (stationId) {
+      this.latestByStation.set(stationId, snapshot);
+    }
+    if (dto.clusterId) {
+      this.latestByCluster.set(dto.clusterId, snapshot);
+    }
     this.pushHistory(snapshot);
 
     // 2. Gom nhóm dữ liệu ghi vào database qua buffer (TimescaleDB)
@@ -182,11 +224,20 @@ export class SensorService implements OnModuleInit {
   }
 
 
-  getLatest(): SensorSnapshot | null {
+  getLatest(stationId?: number, clusterId?: string): SensorSnapshot | null {
+    if (stationId && this.latestByStation.has(stationId)) {
+      return this.latestByStation.get(stationId)!;
+    }
+    if (clusterId && this.latestByCluster.has(clusterId)) {
+      return this.latestByCluster.get(clusterId)!;
+    }
     return this.latest;
   }
 
-  getHistory(): SensorHistory {
+  getHistory(stationId?: number): SensorHistory {
+    if (stationId && this.historyByStation.has(stationId)) {
+      return this.historyByStation.get(stationId)!;
+    }
     return this.history;
   }
 
@@ -352,6 +403,32 @@ export class SensorService implements OnModuleInit {
       (Object.keys(h) as (keyof SensorHistory)[]).forEach((k) =>
         (h[k] as any[]).shift(),
       );
+    }
+
+    if (s.stationId) {
+      if (!this.historyByStation.has(s.stationId)) {
+        this.historyByStation.set(s.stationId, {
+          timestamps: [],
+          freq: [],
+          amp: [],
+          waterLevel: [],
+          moisture: [],
+          percent: [],
+        });
+      }
+      const stH = this.historyByStation.get(s.stationId)!;
+      stH.timestamps.push(s.timestamp);
+      stH.freq.push(s.freq);
+      stH.amp.push(s.amp);
+      stH.waterLevel.push(s.waterLevel);
+      stH.moisture.push(s.moisture);
+      stH.percent.push(s.percent);
+
+      if (stH.timestamps.length > MAX_HISTORY) {
+        (Object.keys(stH) as (keyof SensorHistory)[]).forEach((k) =>
+          (stH[k] as any[]).shift(),
+        );
+      }
     }
   }
 

@@ -165,10 +165,14 @@ export class SensorController {
 
 
   @Get('latest')
-  getLatest() {
+  getLatest(
+    @Query('stationId') stationId?: string,
+    @Query('clusterId') clusterId?: string,
+  ) {
+    const stId = stationId ? parseInt(stationId, 10) : undefined;
     return {
-      data: this.sensorService.getLatest(),
-      history: this.sensorService.getHistory(),
+      data: this.sensorService.getLatest(stId, clusterId),
+      history: this.sensorService.getHistory(stId),
     };
   }
 

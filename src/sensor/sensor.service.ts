@@ -9,6 +9,7 @@ import { AlarmEvent } from './entities/alarm-event.entity';
 import { SensorBufferService } from './sensor-buffer.service';
 import { VibrationWindowService } from './vibration-window.service';
 import { Station } from '../dam/entities/station.entity';
+import { Dam } from '../dam/entities/dam.entity';
 import { SensorClusterService } from './sensor-cluster.service';
 import * as nodemailer from 'nodemailer';
 
@@ -41,6 +42,8 @@ export class SensorService implements OnModuleInit {
     private readonly alarmEventRepo: Repository<AlarmEvent>,
     @InjectRepository(Station)
     private readonly stationRepo: Repository<Station>,
+    @InjectRepository(Dam)
+    private readonly damRepo: Repository<Dam>,
     private readonly bufferService: SensorBufferService,
     private readonly vibrationWindowService: VibrationWindowService,
     private readonly configService: ConfigService,
@@ -184,7 +187,8 @@ export class SensorService implements OnModuleInit {
           vibConfig.alertHigh,
           dto.amp,
           Math.round(vibResult.durationMs / 1000),
-          `Rung động vượt ngưỡng liên tiếp: ${dto.amp} mm/s`
+          `Rung động vượt ngưỡng liên tiếp: ${dto.amp} mm/s`,
+          stationId
         );
         if (alarm) newAlarms.push(alarm);
       }
@@ -200,7 +204,8 @@ export class SensorService implements OnModuleInit {
         waterConfig.alertHigh,
         dto.waterLevel,
         0,
-        `Mực nước vượt ngưỡng báo động: ${dto.waterLevel} cm`
+        `Mực nước vượt ngưỡng báo động: ${dto.waterLevel} cm`,
+        stationId
       );
       if (alarm) newAlarms.push(alarm);
     }
@@ -215,7 +220,8 @@ export class SensorService implements OnModuleInit {
         humConfig.alertHigh,
         dto.moisture,
         0,
-        `Độ ẩm rò rỉ vượt ngưỡng: ${dto.moisture}%`
+        `Độ ẩm rò rỉ vượt ngưỡng: ${dto.moisture}%`,
+        stationId
       );
       if (alarm) newAlarms.push(alarm);
     }
@@ -262,15 +268,18 @@ export class SensorService implements OnModuleInit {
 
   // ── Alarm Events API ─────────────────────────────────────────────
   async getAlarmEvents(
-    damId: string,
+    damId?: string,
     limit = 50,
     severity?: string,
     resolved?: boolean,
   ): Promise<AlarmEvent[]> {
     const qb = this.alarmEventRepo.createQueryBuilder('a')
-      .where('a.damId = :damId', { damId })
       .orderBy('a.triggeredAt', 'DESC')
       .take(limit);
+
+    if (damId && damId !== 'all') {
+      qb.andWhere('a.damId = :damId', { damId });
+    }
 
     if (severity) {
       qb.andWhere('a.severity = :severity', { severity });
@@ -329,6 +338,7 @@ export class SensorService implements OnModuleInit {
     measuredVal: number,
     durationS: number,
     notes: string,
+    stationId?: number,
   ): Promise<AlarmEvent | null> {
     // Để tránh spam nhiều sự kiện cảnh báo trùng lặp liên tục trong thời gian ngắn,
     // ta chỉ tạo cảnh báo mới nếu sự kiện trước đó cách đây quá 1 phút hoặc đã được resolved.
@@ -352,6 +362,26 @@ export class SensorService implements OnModuleInit {
     event.measuredVal = measuredVal;
     event.durationS = durationS;
     event.notes = notes;
+    if (stationId) event.stationId = stationId;
+
+    // Tra cứu và điền chính xác Tên Trạm, Tên Đập và Vị trí thực tế
+    try {
+      let station: Station | null = null;
+      if (stationId) {
+        station = await this.stationRepo.findOne({ where: { id: stationId }, relations: { dam: true } });
+      }
+      let dam: Dam | null = null;
+      const targetDamId = damId || station?.damId;
+      if (targetDamId) {
+        dam = await this.damRepo.findOne({ where: { id: targetDamId } });
+      }
+
+      event.stationName = station?.name || (stationId ? `Trạm ${stationId}` : '');
+      event.damName = dam?.name || station?.dam?.name || (damId ? `Đập ${damId}` : '');
+      event.location = station?.location || station?.km || dam?.location || 'Vị trí công trình đập';
+    } catch (err: any) {
+      console.log('[SensorService] Lỗi tra cứu thông tin Trạm/Đập:', err.message);
+    }
 
     // Chỉ kích hoạt Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
     if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
@@ -359,7 +389,7 @@ export class SensorService implements OnModuleInit {
     }
 
     await this.alarmEventRepo.save(event);
-    console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} - Giá trị đo: ${measuredVal}`);
+    console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} tại [${event.stationName || stationId || 'Trạm Quan Trắc'}] - Đập [${event.damName || damId}]`);
 
     if (event.cameraActivated) {
       this.triggerAiCamera(event);
@@ -368,17 +398,34 @@ export class SensorService implements OnModuleInit {
     return event;
   }
 
-  triggerAiCamera(alarm: AlarmEvent) {
-    const jetsonUrl = this.configService.get<string>('JETSON_TX2_URL', 'http://localhost:8080');
+  async triggerAiCamera(alarm: AlarmEvent) {
+    let jetsonUrl = this.configService.get<string>('JETSON_TX2_URL', 'http://localhost:8080');
+
+    if (alarm.damId) {
+      try {
+        const dam = await this.damRepo.findOne({ where: { id: alarm.damId } });
+        if (dam?.cameraUrl) {
+          jetsonUrl = dam.cameraUrl;
+        }
+      } catch (err) {
+        console.log('[SensorService] Lỗi tìm cameraUrl của đập:', err.message);
+      }
+    }
+
     const cameraUrl = `${jetsonUrl}/camera/trigger-inference`;
 
-    console.log(`[SensorService] Đang gửi lệnh kích hoạt Camera AI tới: ${cameraUrl} cho sự kiện cảnh báo ${alarm.id}`);
+    console.log(`[SensorService] Đang gửi lệnh kích hoạt Camera AI tới [${alarm.damId || 'N/A'}]: ${cameraUrl} cho sự kiện cảnh báo ${alarm.id}`);
 
     fetch(cameraUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         alarmId: alarm.id,
+        damId: alarm.damId,
+        damName: alarm.damName,
+        stationId: alarm.stationId,
+        stationName: alarm.stationName,
+        location: alarm.location,
         sensorId: alarm.sensorId,
         sensorType: alarm.sensorType,
         measuredValue: alarm.measuredVal,

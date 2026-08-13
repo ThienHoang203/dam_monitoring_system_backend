@@ -38,6 +38,18 @@ export class AlarmEvent {
   @Column({ type: 'text', nullable: true })
   imageUrl: string; // URL MinIO
 
+  @Column({ type: 'integer', nullable: true })
+  stationId: number;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  stationName: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  damName: string;
+
+  @Column({ type: 'varchar', length: 250, nullable: true })
+  location: string;
+
   @Column({ type: 'boolean', nullable: true })
   crackDetected: boolean;
 

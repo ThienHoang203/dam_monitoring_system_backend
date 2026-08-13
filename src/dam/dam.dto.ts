@@ -8,6 +8,7 @@ export class CreateDamDto {
   flow?: number;
   fillPct?: number;
   status?: string;
+  cameraUrl?: string;
 }
 
 export class UpdateDamDto {
@@ -19,6 +20,7 @@ export class UpdateDamDto {
   flow?: number;
   fillPct?: number;
   status?: string;
+  cameraUrl?: string;
 }
 
 export class CreateStationDto {

@@ -69,11 +69,11 @@ export class DamService implements OnModuleInit {
 
   // ── Dam CRUD ──
   async findAllDams(): Promise<Dam[]> {
-    return this.damRepo.find({ relations: { stations: true } });
+    return this.damRepo.find({ relations: { stations: { sensorClusters: true } } });
   }
 
   async findDamById(id: string): Promise<Dam> {
-    const dam = await this.damRepo.findOne({ where: { id }, relations: { stations: true } });
+    const dam = await this.damRepo.findOne({ where: { id }, relations: { stations: { sensorClusters: true } } });
     if (!dam) throw new NotFoundException(`Dam with id ${id} not found`);
     return dam;
   }
@@ -123,13 +123,13 @@ export class DamService implements OnModuleInit {
   // ── Station CRUD ──
   async findAllStations(damId?: string): Promise<Station[]> {
     if (damId) {
-      return this.stationRepo.find({ where: { damId }, relations: { dam: true } });
+      return this.stationRepo.find({ where: { damId }, relations: { dam: true, sensorClusters: true } });
     }
-    return this.stationRepo.find({ relations: { dam: true } });
+    return this.stationRepo.find({ relations: { dam: true, sensorClusters: true } });
   }
 
   async findStationById(id: number): Promise<Station> {
-    const station = await this.stationRepo.findOne({ where: { id }, relations: { dam: true } });
+    const station = await this.stationRepo.findOne({ where: { id }, relations: { dam: true, sensorClusters: true } });
     if (!station) throw new NotFoundException(`Station with id ${id} not found`);
     return station;
   }

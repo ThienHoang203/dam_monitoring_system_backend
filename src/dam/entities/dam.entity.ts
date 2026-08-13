@@ -30,6 +30,9 @@ export class Dam {
   @Column({ type: 'varchar', length: 16, default: 'safe' })
   status: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  cameraUrl: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

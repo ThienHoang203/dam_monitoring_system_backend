@@ -9,6 +9,7 @@ import { AlarmEvent } from './entities/alarm-event.entity';
 import { SensorCluster } from './entities/sensor-cluster.entity';
 import { SensorDevice } from './entities/sensor-device.entity';
 import { Station } from '../dam/entities/station.entity';
+import { Dam } from '../dam/entities/dam.entity';
 import { SensorBufferService } from './sensor-buffer.service';
 import { VibrationWindowService } from './vibration-window.service';
 import { DownsamplerService } from './downsampler.service';
@@ -24,6 +25,7 @@ import { SensorClusterController } from './sensor-cluster.controller';
       SensorCluster,
       SensorDevice,
       Station,
+      Dam,
     ]),
   ],
   controllers: [SensorController, SensorClusterController],

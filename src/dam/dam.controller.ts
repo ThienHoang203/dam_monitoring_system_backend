@@ -12,11 +12,16 @@ import {
 import { DamService } from './dam.service';
 import { CreateDamDto, UpdateDamDto, CreateStationDto, UpdateStationDto } from './dam.dto';
 
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+
 @Controller()
 export class DamController {
   constructor(private readonly damService: DamService) {}
 
-  // ── Dam Endpoints ──
+  // ── Dam Endpoints (GET là Công Khai cho Khách xem VIEWER) ──
   @Get('dams')
   async findAllDams() {
     const dams = await this.damService.findAllDams();
@@ -30,23 +35,29 @@ export class DamController {
   }
 
   @Post('dams')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async createDam(@Body() dto: CreateDamDto) {
     const dam = await this.damService.createDam(dto);
     return { ok: true, dam };
   }
 
   @Put('dams/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async updateDam(@Param('id') id: string, @Body() dto: UpdateDamDto) {
     const dam = await this.damService.updateDam(id, dto);
     return { ok: true, dam };
   }
 
   @Delete('dams/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async deleteDam(@Param('id') id: string) {
     return this.damService.deleteDam(id);
   }
 
-  // ── Station Endpoints ──
+  // ── Station Endpoints (GET là Công Khai cho Khách xem VIEWER) ──
   @Get('stations')
   async findAllStations(@Query('damId') damId?: string) {
     const stations = await this.damService.findAllStations(damId);
@@ -60,12 +71,16 @@ export class DamController {
   }
 
   @Post('stations')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async createStation(@Body() dto: CreateStationDto) {
     const station = await this.damService.createStation(dto);
     return { ok: true, station };
   }
 
   @Put('stations/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async updateStation(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStationDto,
@@ -75,6 +90,8 @@ export class DamController {
   }
 
   @Delete('stations/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
   async deleteStation(@Param('id', ParseIntPipe) id: number) {
     return this.damService.deleteStation(id);
   }

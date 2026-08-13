@@ -19,6 +19,14 @@ import { AlarmEvent } from './entities/alarm-event.entity';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 
 
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../auth/entities/user.entity';
+
 @Controller('sensor')
 export class SensorController {
   constructor(
@@ -209,15 +217,28 @@ export class SensorController {
   }
 
   // ── Alarm Events ─────────────────────────────────────────────────
-  // Lấy danh sách sự kiện cảnh báo
+  // Lấy danh sách sự kiện cảnh báo (ADMIN thấy tất cả đập, OPERATOR chỉ thấy đập quản lý)
   @Get('alarms')
+  @UseGuards(OptionalJwtAuthGuard)
   async getAlarmEvents(
-    @Query('damId') damId: string,
+    @CurrentUser() user: User | null,
+    @Query('damId') damId?: string,
     @Query('limit') limit?: string,
     @Query('severity') severity?: string,
     @Query('resolved') resolved?: string,
   ) {
-    const targetDamId = damId || 'dam_1';
+    let targetDamId = damId;
+
+    // Nếu là OPERATOR: Bắt buộc chỉ lấy cảnh báo của đập được phân công
+    if (user && user.role === 'OPERATOR') {
+      targetDamId = user.assignedDamId || damId || 'dam_1';
+    }
+
+    // Nếu damId === 'all' hoặc không truyền damId (hoặc là ADMIN chọn xem tất cả đập)
+    if (damId === 'all' || (!damId && (!user || user.role === 'ADMIN'))) {
+      targetDamId = undefined;
+    }
+
     const maxLimit = limit ? parseInt(limit, 10) : 50;
     const resolvedFlag = resolved === 'true' ? true : resolved === 'false' ? false : undefined;
 
@@ -232,6 +253,8 @@ export class SensorController {
 
   // Đánh dấu sự kiện cảnh báo đã xử lý
   @Put('alarms/:id/resolve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'OPERATOR')
   async resolveAlarmEvent(@Param('id') id: string) {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
     return { ok: true, data: this.rewriteImageUrl(resolved) };

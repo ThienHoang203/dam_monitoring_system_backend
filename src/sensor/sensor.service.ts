@@ -11,6 +11,7 @@ import { VibrationWindowService } from './vibration-window.service';
 import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
 import { SensorClusterService } from './sensor-cluster.service';
+import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
 const MAX_HISTORY = 60;
@@ -48,6 +49,7 @@ export class SensorService implements OnModuleInit {
     private readonly vibrationWindowService: VibrationWindowService,
     private readonly configService: ConfigService,
     private readonly sensorClusterService: SensorClusterService,
+    private readonly auditLogService: AuditLogService,
   ) { }
 
   // Khởi tạo ngưỡng mặc định khi khởi động ứng dụng nếu chưa tồn tại
@@ -263,7 +265,18 @@ export class SensorService implements OnModuleInit {
 
   async updateThresholdConfig(id: string, update: Partial<ThresholdConfig>): Promise<ThresholdConfig> {
     await this.thresholdConfigRepo.update(id, update);
-    return this.thresholdConfigRepo.findOneOrFail({ where: { id } });
+    const updated = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
+
+    await this.auditLogService.logAction({
+      action: 'UPDATE_THRESHOLD',
+      category: 'THRESHOLD',
+      description: `Thay đổi cấu hình ngưỡng báo động [${updated.sensorType.toUpperCase()}] đập ${updated.damId} (Warn: ${updated.warnHigh}, Alert: ${updated.alertHigh}, Critical: ${updated.criticalHigh})`,
+      username: 'admin',
+      userRole: 'ADMIN',
+      metadata: updated,
+    });
+
+    return updated;
   }
 
   // ── Alarm Events API ─────────────────────────────────────────────

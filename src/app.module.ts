@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { SensorModule } from './sensor/sensor.module';
 import { DamModule } from './dam/dam.module';
 import { AuthModule } from './auth/auth.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { AuthModule } from './auth/auth.module';
     SensorModule,
     DamModule,
     AuthModule,
+    AuditLogModule,
   ],
 })
 export class AppModule {}

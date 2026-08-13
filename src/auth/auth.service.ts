@@ -12,6 +12,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { User, UserRole, UserStatus } from './entities/user.entity';
 import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto } from './auth.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -19,6 +20,7 @@ export class AuthService implements OnModuleInit {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly jwtService: JwtService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   async onModuleInit() {
@@ -69,6 +71,15 @@ export class AuthService implements OnModuleInit {
 
     await this.userRepo.save(user);
 
+    await this.auditLogService.logAction({
+      action: 'REGISTER',
+      category: 'AUTH',
+      description: `Đăng ký tài khoản mới: ${user.fullName || user.username} (${user.email})`,
+      username: user.username,
+      userRole: user.role,
+      metadata: { email: user.email, assignedDamId: user.assignedDamId },
+    });
+
     const { passwordHash: _, ...result } = user;
     return {
       message: 'Đăng ký tài khoản thành công! Vui lòng chờ Quản trị viên phê duyệt tài khoản.',
@@ -104,6 +115,14 @@ export class AuthService implements OnModuleInit {
     user.lastLoginAt = new Date();
     await this.userRepo.save(user);
 
+    await this.auditLogService.logAction({
+      action: 'LOGIN',
+      category: 'AUTH',
+      description: `Tài khoản "${user.username}" (${user.role}) đã đăng nhập vào hệ thống`,
+      username: user.username,
+      userRole: user.role,
+    });
+
     const payload = {
       sub: user.id,
       username: user.username,
@@ -135,24 +154,35 @@ export class AuthService implements OnModuleInit {
   }
 
   async findUserById(id: string): Promise<User> {
-    const user = await this.userRepo.findOne({ where: { id } });
+    const user = await this.findUserById(id);
     if (!user) throw new NotFoundException(`Không tìm thấy người dùng mã ${id}`);
     return user;
   }
 
   async approveUser(id: string, dto: ApproveUserDto): Promise<Partial<User>> {
-    const user = await this.findUserById(id);
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`Không tìm thấy người dùng mã ${id}`);
     user.status = dto.status || 'ACTIVE';
     if (dto.role) user.role = dto.role;
     if (dto.assignedDamId) user.assignedDamId = dto.assignedDamId;
 
     await this.userRepo.save(user);
+
+    await this.auditLogService.logAction({
+      action: 'APPROVE_USER',
+      category: 'AUTH',
+      description: `Quản trị viên đã phê duyệt tài khoản "${user.username}" (Role: ${user.role}, Đập: ${user.assignedDamId || 'Tất cả'})`,
+      username: 'admin',
+      userRole: 'ADMIN',
+    });
+
     const { passwordHash: _, ...result } = user;
     return result;
   }
 
   async updateUser(id: string, dto: UpdateUserDto): Promise<Partial<User>> {
-    const user = await this.findUserById(id);
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`Không tìm thấy người dùng mã ${id}`);
     if (dto.fullName) user.fullName = dto.fullName;
     if (dto.phoneNumber !== undefined) user.phoneNumber = dto.phoneNumber;
     if (dto.role) user.role = dto.role;
@@ -164,12 +194,22 @@ export class AuthService implements OnModuleInit {
     }
 
     await this.userRepo.save(user);
+
+    await this.auditLogService.logAction({
+      action: 'UPDATE_USER',
+      category: 'AUTH',
+      description: `Cập nhật thông tin tài khoản "${user.username}" (Role mới: ${user.role}, Trạng thái: ${user.status})`,
+      username: 'admin',
+      userRole: 'ADMIN',
+    });
+
     const { passwordHash: _, ...result } = user;
     return result;
   }
 
   async deleteUser(id: string): Promise<{ ok: boolean }> {
-    const user = await this.findUserById(id);
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException(`Không tìm thấy người dùng mã ${id}`);
     if (user.role === 'ADMIN') {
       const adminCount = await this.userRepo.count({ where: { role: 'ADMIN' } });
       if (adminCount <= 1) {
@@ -177,6 +217,15 @@ export class AuthService implements OnModuleInit {
       }
     }
     await this.userRepo.remove(user);
+
+    await this.auditLogService.logAction({
+      action: 'DELETE_USER',
+      category: 'AUTH',
+      description: `Xóa tài khoản người dùng "${user.username}"`,
+      username: 'admin',
+      userRole: 'ADMIN',
+    });
+
     return { ok: true };
   }
 }

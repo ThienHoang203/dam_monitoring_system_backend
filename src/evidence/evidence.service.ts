@@ -193,29 +193,9 @@ export class EvidenceService implements OnModuleInit {
     let updatedAlarm: AlarmEvent | null = null;
     try {
       let alarm: AlarmEvent | null = null;
-
-      // 1. Tìm theo eventId nếu có
+      // 1. Tìm chính xác AlarmEvent theo eventId của sự cố
       if (eventId) {
         alarm = await this.alarmEventRepo.findOne({ where: { eventId } });
-      }
-
-      // 2. Nếu chưa có eventId ghép khớp -> Tìm AlarmEvent vừa mới được tạo gần đây (trong 30s) chưa có imageUrl
-      if (!alarm) {
-        const recentCutoff = new Date(Date.now() - 30 * 1000);
-        alarm = await this.alarmEventRepo.findOne({
-          where: [
-            {
-              imageUrl: IsNull(),
-              triggeredAt: MoreThan(recentCutoff),
-              damId: targetDamId,
-            },
-            {
-              imageUrl: IsNull(),
-              triggeredAt: MoreThan(recentCutoff),
-            },
-          ],
-          order: { triggeredAt: 'DESC' },
-        });
       }
 
       if (alarm) {
@@ -229,24 +209,8 @@ export class EvidenceService implements OnModuleInit {
           `[Evidence] Đã ghép thành công imageUrl vào Alarm ${alarm.id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${alarm.measuredVal} ${alarm.sensorType}): ${imageUrl}`,
         );
       } else {
-        // HTTP upload tới trước MQTT -> Tạo mới AlarmEvent với metadata thực tế
-        const isCrack = (confidence || 0) > 0;
-        const newAlarm = new AlarmEvent();
-        newAlarm.eventId = eventId || undefined;
-        newAlarm.damId = targetDamId;
-        newAlarm.sensorId = targetSensorId;
-        newAlarm.sensorType = 'vibration';
-        newAlarm.severity = isCrack ? 'CRITICAL' : 'ALERT';
-        newAlarm.thresholdVal = targetThreshold;
-        newAlarm.measuredVal = measuredVal || 0;
-        newAlarm.cameraActivated = true;
-        newAlarm.imageUrl = imageUrl;
-        newAlarm.crackConfidence = confidence || 0;
-        newAlarm.crackDetected = isCrack;
-        newAlarm.notes = `Ảnh minh chứng nhận từ Gateway HTTP (${gatewayId}) - Node: ${targetSensorId}`;
-        updatedAlarm = await this.alarmEventRepo.save(newAlarm);
         console.log(
-          `[Evidence] Tạo mới Alarm ${newAlarm.id} với eventId ${eventId || 'N/A'} (Dam: ${targetDamId}, Sensor: ${targetSensorId})`,
+          `[Evidence] Chưa tìm thấy AlarmEvent cho eventId ${eventId || 'N/A'}. File ảnh đã lưu an toàn vào Evidence DB để ghép khớp khi MQTT anomaly đến.`,
         );
       }
     } catch (err: any) {

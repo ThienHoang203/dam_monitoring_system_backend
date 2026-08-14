@@ -9,10 +9,10 @@ import { AlarmEvent } from './entities/alarm-event.entity';
 import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
 import { SensorBufferService } from './sensor-buffer.service';
-import { VibrationWindowService } from './vibration-window.service';
 import { DownsamplerService } from './downsampler.service';
 import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
+import { Evidence } from '../evidence/entities/evidence.entity';
 
 @Module({
   imports: [
@@ -24,6 +24,7 @@ import { Node } from '../node/entities/node.entity';
       Dam,
       Gateway,
       Node,
+      Evidence,
     ]),
   ],
   controllers: [SensorController],
@@ -31,7 +32,6 @@ import { Node } from '../node/entities/node.entity';
     SensorService,
     SensorGateway,
     SensorBufferService,
-    VibrationWindowService,
     DownsamplerService,
   ],
   exports: [SensorService, SensorGateway],

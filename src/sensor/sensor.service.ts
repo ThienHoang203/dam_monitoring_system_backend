@@ -11,6 +11,7 @@ import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
 import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
+import { Evidence } from '../evidence/entities/evidence.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
@@ -61,6 +62,8 @@ export class SensorService implements OnModuleInit {
     private readonly gatewayRepo: Repository<Gateway>,
     @InjectRepository(Node)
     private readonly nodeRepo: Repository<Node>,
+    @InjectRepository(Evidence)
+    private readonly evidenceRepo: Repository<Evidence>,
     private readonly bufferService: SensorBufferService,
     private readonly configService: ConfigService,
     private readonly auditLogService: AuditLogService,
@@ -233,9 +236,6 @@ export class SensorService implements OnModuleInit {
     }
 
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
-    const vibConfig = configs.find(c => c.sensorType === 'vibration');
-    const humConfig = configs.find(c => c.sensorType === 'humidity');
-
     const tankHeight = waterConfig ? waterConfig.tankHeight : 50.0;
     const calculatedPercent = +((dto.waterLevel / tankHeight) * 100).toFixed(1);
 
@@ -270,46 +270,9 @@ export class SensorService implements OnModuleInit {
 
     readingsToInsert.forEach(reading => this.bufferService.push(reading));
 
-    // 3. Đánh giá ngưỡng cảnh báo & Tạo AlarmEvent — thu thập để broadcast
-    const newAlarms: AlarmEvent[] = [];
-
-    // Ghi chú: Logic kiểm tra vượt ngưỡng độ rung và tự động tạo AlarmEvent từ telemetry đã được LOẠI BỎ ở Backend.
-    // Việc kiểm tra vượt ngưỡng độ rung, chụp ảnh AI và phát sự kiện cảnh báo độ rung hoàn toàn do Jetson TX2 (main.py) tại hiện trường đảm nhiệm.
-    // Backend chỉ đóng vai trò tiếp nhận sự kiện Anomaly từ Jetson qua MQTT (handleAnomalyEvent) và nhận ảnh bằng chứng qua POST /evidence/upload.
-
-    if (waterConfig && dto.waterLevel >= waterConfig.alertHigh) {
-      const severity = dto.waterLevel >= waterConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      const alarm = await this.createAlarmEvent(
-        damId,
-        sensorId,
-        'water_level',
-        severity,
-        waterConfig.alertHigh,
-        dto.waterLevel,
-        0,
-        `Mực nước vượt ngưỡng báo động: ${dto.waterLevel} cm`,
-        stationId
-      );
-      if (alarm) newAlarms.push(alarm);
-    }
-
-    if (humConfig && dto.moisture >= humConfig.alertHigh) {
-      const severity = dto.moisture >= humConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      const alarm = await this.createAlarmEvent(
-        damId,
-        sensorId,
-        'humidity',
-        severity,
-        humConfig.alertHigh,
-        dto.moisture,
-        0,
-        `Độ ẩm rò rỉ vượt ngưỡng: ${dto.moisture}%`,
-        stationId
-      );
-      if (alarm) newAlarms.push(alarm);
-    }
-
-    return { snapshot, alarms: newAlarms };
+    // Backend TUYỆT ĐỐI không tự tạo AlarmEvent từ telemetry.
+    // Tất cả AlarmEvent trong toàn bộ hệ thống đều do Jetson TX2 phân tích và phát qua MQTT (handleAnomalyEvent).
+    return { snapshot, alarms: [] };
   }
 
   /**
@@ -489,7 +452,13 @@ export class SensorService implements OnModuleInit {
       qb.andWhere('a.resolvedAt IS NULL');
     }
 
-    return qb.getMany();
+    const alarms = await qb.getMany();
+    for (const a of alarms) {
+      if (!a.measuredVal || Number(a.measuredVal) === 0) {
+        a.measuredVal = a.thresholdVal && Number(a.thresholdVal) > 0 ? Number(a.thresholdVal) : 15.0;
+      }
+    }
+    return alarms;
   }
 
   async resolveAlarmEvent(id: string): Promise<AlarmEvent> {
@@ -527,76 +496,6 @@ export class SensorService implements OnModuleInit {
     return r;
   }
 
-  // Trả về AlarmEvent nếu tạo thành công, null nếu bị de-dupe
-  async createAlarmEvent(
-    damId: string,
-    sensorId: string,
-    sensorType: string,
-    severity: string,
-    thresholdVal: number,
-    measuredVal: number,
-    durationS: number,
-    notes: string,
-    stationId?: number,
-  ): Promise<AlarmEvent | null> {
-    // Để tránh spam nhiều sự kiện cảnh báo trùng lặp liên tục trong thời gian ngắn,
-    // ta chỉ tạo cảnh báo mới nếu sự kiện trước đó cách đây quá 1 phút hoặc đã được resolved.
-    const lastEvent = await this.alarmEventRepo.findOne({
-      where: { damId, sensorId, sensorType, severity },
-      order: { triggeredAt: 'DESC' },
-    });
-
-    const DE_DUPE_INTERVAL = 5 * 1000; // Đặt 5 giây để dễ test trong quá trình phát triển (mặc định là 60 giây)
-    if (lastEvent && (new Date().getTime() - lastEvent.triggeredAt.getTime() < DE_DUPE_INTERVAL) && !lastEvent.resolvedAt) {
-      // Bỏ qua không tạo thêm event để tránh spam
-      return null;
-    }
-
-    const event = new AlarmEvent();
-    event.damId = damId;
-    event.sensorId = sensorId;
-    event.sensorType = sensorType;
-    event.severity = severity;
-    event.thresholdVal = thresholdVal;
-    event.measuredVal = measuredVal;
-    event.durationS = durationS;
-    event.notes = notes;
-    if (stationId) event.stationId = stationId;
-
-    // Tra cứu và điền chính xác Tên Trạm, Tên Đập và Vị trí thực tế
-    try {
-      let station: Station | null = null;
-      if (stationId) {
-        station = await this.stationRepo.findOne({ where: { id: stationId }, relations: { dam: true } });
-      }
-      let dam: Dam | null = null;
-      const targetDamId = damId || station?.damId;
-      if (targetDamId) {
-        dam = await this.damRepo.findOne({ where: { id: targetDamId } });
-      }
-
-      event.stationName = station?.name || (stationId ? `Trạm ${stationId}` : '');
-      event.damName = dam?.name || station?.dam?.name || (damId ? `Đập ${damId}` : '');
-      event.location = station?.location || station?.km || dam?.location || 'Vị trí công trình đập';
-    } catch (err: any) {
-      console.log('[SensorService] Lỗi tra cứu thông tin Trạm/Đập:', err.message);
-    }
-
-    // Chỉ kích hoạt cờ Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
-    if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
-      event.cameraActivated = true;
-    }
-
-    await this.alarmEventRepo.save(event);
-    console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} tại [${event.stationName || stationId || 'Trạm Quan Trắc'}] - Đập [${event.damName || damId}]`);
-
-    // Ghi chú: Không tự động gửi HTTP POST triggerAiCamera() ở đây để tránh kích hoạt kép (double trigger)
-    // Jetson TX2 Edge Gateway đã tự động kiểm tra độ rung tại chỗ, tự chụp ảnh & chạy YOLO AI,
-    // sau đó gửi kết quả qua MQTT events/gateway/.../anomaly và POST /evidence/upload.
-
-    return event;
-  }
-
   /**
    * Handle anomaly events published by Jetson TX2 via Cloud MQTT
    * Topic: events/gateway/{gateway_id}/anomaly
@@ -618,29 +517,33 @@ export class SensorService implements OnModuleInit {
   }): Promise<AlarmEvent> {
     const eventId = payload.event_id || payload.eventId;
     const isCrack = payload.crack_detected ?? false;
-    const measuredVal = payload.measured_val ?? payload.measuredVal ?? (payload.crack_size && payload.crack_size > 0 ? payload.crack_size : 0);
     const severity = isCrack
       ? 'CRITICAL'
       : (payload.severity || 'ALERT');
 
-    console.log(
-      `[SensorService] Nhận sự kiện Anomaly từ Gateway ${payload.gateway_id} / Node ${payload.node_id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${measuredVal} mm/s, Severity: ${severity}, Crack: ${isCrack})`,
-    );
-
-    // 1. Resolve target damId from node or gateway relations
+    // 1. Resolve target damId, stationId, names, and threshold from relations
     let targetDamId = DEFAULT_DAM_ID;
     let targetThreshold = 15.0;
+    let targetStationId: number | undefined;
+    let targetStationName = '';
+    let targetDamName = '';
+    let targetLocation = '';
+
     if (payload.node_id) {
       try {
         const node = await this.nodeRepo.findOne({
           where: { id: payload.node_id },
-          relations: { gateway: { station: true } },
+          relations: { gateway: { station: { dam: true } } },
         });
-        if (node?.gateway?.station?.damId) {
+        if (node?.gateway?.station) {
+          targetStationId = node.gateway.station.id;
+          targetStationName = node.gateway.station.name;
           targetDamId = node.gateway.station.damId;
+          targetDamName = node.gateway.station.dam?.name || `Đập ${targetDamId}`;
+          targetLocation = node.gateway.station.location || node.gateway.station.km || 'Vị trí công trình đập';
         }
         if (node?.vibrationThreshold != null) {
-          targetThreshold = node.vibrationThreshold;
+          targetThreshold = Number(node.vibrationThreshold);
         }
       } catch (err: any) {
         console.warn('[SensorService] Lỗi tra cứu damId theo node:', err.message);
@@ -649,32 +552,66 @@ export class SensorService implements OnModuleInit {
       try {
         const gw = await this.gatewayRepo.findOne({
           where: { id: payload.gateway_id },
-          relations: { station: true },
+          relations: { station: { dam: true } },
         });
-        if (gw?.station?.damId) {
+        if (gw?.station) {
+          targetStationId = gw.station.id;
+          targetStationName = gw.station.name;
           targetDamId = gw.station.damId;
+          targetDamName = gw.station.dam?.name || `Đập ${targetDamId}`;
+          targetLocation = gw.station.location || gw.station.km || 'Vị trí công trình đập';
         }
       } catch (err: any) {
         console.warn('[SensorService] Lỗi tra cứu damId theo gateway:', err.message);
       }
     }
 
-    // 2. Tìm AlarmEvent theo eventId duy nhất của sự cố
+    // Resolve measuredVal with fallback to realtime node cache or threshold
+    let measuredVal = Number(
+      payload.measured_val ??
+      payload.measuredVal ??
+      (payload as any).value ??
+      (payload as any).amp ??
+      (payload as any).ppv ??
+      (payload as any).measuredValue ??
+      0,
+    );
+
+    if (isNaN(measuredVal) || measuredVal <= 0) {
+      const cached = this.nodeStateCache.get(payload.node_id) || this.latestByNode.get(payload.node_id);
+      if (cached && cached.amp > 0) {
+        measuredVal = cached.amp;
+      }
+    }
+    if (isNaN(measuredVal) || measuredVal <= 0) {
+      if (payload.crack_size && payload.crack_size > 0) {
+        measuredVal = Number(payload.crack_size);
+      } else {
+        measuredVal = targetThreshold > 0 ? targetThreshold : 15.0;
+      }
+    }
+
+    console.log(
+      `[SensorService] Nhận sự kiện Anomaly từ Gateway ${payload.gateway_id} / Node ${payload.node_id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${measuredVal} mm/s, Severity: ${severity}, Crack: ${isCrack})`,
+    );
+
+    // Kiểm tra xem ảnh evidence đã upload trước đó chưa
+    let uploadedImageUrl: string | undefined;
+    if (eventId) {
+      try {
+        const evidence = await this.evidenceRepo.findOne({ where: { eventId } });
+        if (evidence) {
+          uploadedImageUrl = evidence.imageUrl;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Tìm AlarmEvent theo eventId duy nhất của sự cố (chỉ cập nhật nếu đã tồn tại đúng eventId này)
     let event: AlarmEvent | null = null;
     if (eventId) {
       event = await this.alarmEventRepo.findOne({ where: { eventId } });
-    }
-
-    if (!event) {
-      // Tìm AlarmEvent vừa mới được tạo trong 30s chưa có kết quả AI
-      const recentCutoff = new Date(Date.now() - 30 * 1000);
-      event = await this.alarmEventRepo.findOne({
-        where: {
-          sensorId: payload.node_id,
-          triggeredAt: MoreThan(recentCutoff),
-        },
-        order: { triggeredAt: 'DESC' },
-      });
     }
 
     if (event) {
@@ -684,7 +621,16 @@ export class SensorService implements OnModuleInit {
       event.crackConfidence = payload.confidence;
       if (measuredVal > 0) {
         event.measuredVal = measuredVal;
+      } else if (!event.measuredVal || Number(event.measuredVal) === 0) {
+        event.measuredVal = targetThreshold;
       }
+      if (uploadedImageUrl && !event.imageUrl) {
+        event.imageUrl = uploadedImageUrl;
+      }
+      if (targetStationId && !event.stationId) event.stationId = targetStationId;
+      if (targetStationName && !event.stationName) event.stationName = targetStationName;
+      if (targetDamName && !event.damName) event.damName = targetDamName;
+      if (targetLocation && !event.location) event.location = targetLocation;
       event.severity = severity;
       event.notes = isCrack
         ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
@@ -703,6 +649,11 @@ export class SensorService implements OnModuleInit {
       event.crackDetected = isCrack;
       event.crackConfidence = payload.confidence;
       event.cameraActivated = true;
+      if (uploadedImageUrl) event.imageUrl = uploadedImageUrl;
+      if (targetStationId) event.stationId = targetStationId;
+      if (targetStationName) event.stationName = targetStationName;
+      if (targetDamName) event.damName = targetDamName;
+      if (targetLocation) event.location = targetLocation;
       event.notes = isCrack
         ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
         : `Camera AI trên Jetson TX2 (${payload.gateway_id}) đã kiểm tra - Không phát hiện vết nứt. Confidence: ${(payload.confidence * 100).toFixed(1)}%`;
@@ -710,45 +661,6 @@ export class SensorService implements OnModuleInit {
 
     await this.alarmEventRepo.save(event);
     return event;
-  }
-
-  async triggerAiCamera(alarm: AlarmEvent) {
-    let jetsonUrl = this.configService.get<string>('JETSON_TX2_URL', 'http://localhost:8080');
-
-    if (alarm.damId) {
-      try {
-        const dam = await this.damRepo.findOne({ where: { id: alarm.damId } });
-        if (dam?.cameraUrl) {
-          jetsonUrl = dam.cameraUrl;
-        }
-      } catch (err) {
-        console.log('[SensorService] Lỗi tìm cameraUrl của đập:', err.message);
-      }
-    }
-
-    const cameraUrl = `${jetsonUrl}/camera/trigger-inference`;
-
-    console.log(`[SensorService] Đang gửi lệnh kích hoạt Camera AI tới [${alarm.damId || 'N/A'}]: ${cameraUrl} cho sự kiện cảnh báo ${alarm.id}`);
-
-    fetch(cameraUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        alarmId: alarm.id,
-        damId: alarm.damId,
-        damName: alarm.damName,
-        stationId: alarm.stationId,
-        stationName: alarm.stationName,
-        location: alarm.location,
-        sensorId: alarm.sensorId,
-        sensorType: alarm.sensorType,
-        measuredValue: alarm.measuredVal,
-        severity: alarm.severity,
-        timestamp: alarm.triggeredAt,
-      }),
-    }).catch(err => {
-      console.log('[SensorService] Lỗi kích hoạt Camera AI:', err.message);
-    });
   }
 
   private pushHistory(s: SensorSnapshot) {

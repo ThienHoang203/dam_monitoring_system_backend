@@ -141,6 +141,502 @@ tsconfig.json
 <files>
 This section contains the contents of the repository's files.
 
+<file path="mosquitto/config/mosquitto.conf">
+listener 1883 0.0.0.0
+allow_anonymous true
+</file>
+
+<file path="src/audit-log/entities/system-log.entity.ts">
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+} from 'typeorm';
+
+@Entity('system_logs')
+export class SystemLog {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ length: 50 })
+  action: string; // e.g. LOGIN, REGISTER, UPDATE_DAM, UPDATE_STATION, UPDATE_THRESHOLD
+
+  @Column({ length: 50 })
+  category: string; // AUTH, DAM, STATION, THRESHOLD
+
+  @Column({ type: 'text' })
+  description: string;
+
+  @Column({ length: 100, nullable: true })
+  username: string;
+
+  @Column({ length: 50, nullable: true })
+  userRole: string;
+
+  @Column({ length: 50, nullable: true })
+  ipAddress: string;
+
+  @Column({ type: 'json', nullable: true })
+  metadata: any;
+
+  @CreateDateColumn()
+  timestamp: Date;
+}
+</file>
+
+<file path="src/audit-log/audit-log.controller.ts">
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { AuditLogService } from './audit-log.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+
+@Controller('audit-logs')
+export class AuditLogController {
+  constructor(private readonly auditLogService: AuditLogService) {}
+
+  @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  async findAll(
+    @Query('category') category?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const maxLimit = limit ? parseInt(limit, 10) : 100;
+    const logs = await this.auditLogService.findAll(category, maxLimit);
+    return { logs };
+  }
+}
+</file>
+
+<file path="src/audit-log/audit-log.module.ts">
+import { Module, Global } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { SystemLog } from './entities/system-log.entity';
+import { AuditLogService } from './audit-log.service';
+import { AuditLogController } from './audit-log.controller';
+
+@Global()
+@Module({
+  imports: [TypeOrmModule.forFeature([SystemLog])],
+  controllers: [AuditLogController],
+  providers: [AuditLogService],
+  exports: [AuditLogService],
+})
+export class AuditLogModule {}
+</file>
+
+<file path="src/audit-log/audit-log.service.ts">
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SystemLog } from './entities/system-log.entity';
+
+@Injectable()
+export class AuditLogService {
+  constructor(
+    @InjectRepository(SystemLog)
+    private readonly logRepo: Repository<SystemLog>,
+  ) {}
+
+  async logAction(data: {
+    action: string;
+    category: 'AUTH' | 'DAM' | 'STATION' | 'THRESHOLD';
+    description: string;
+    username?: string;
+    userRole?: string;
+    ipAddress?: string;
+    metadata?: any;
+  }): Promise<SystemLog> {
+    try {
+      const entry = this.logRepo.create({
+        action: data.action,
+        category: data.category,
+        description: data.description,
+        username: data.username || 'System',
+        userRole: data.userRole || 'SYSTEM',
+        ipAddress: data.ipAddress || undefined,
+        metadata: data.metadata || null,
+      });
+      return await this.logRepo.save(entry);
+    } catch (err: any) {
+      console.error('[AuditLogService] Error saving log:', err.message);
+      return null as any;
+    }
+  }
+
+  async findAll(category?: string, limit = 100): Promise<SystemLog[]> {
+    const qb = this.logRepo.createQueryBuilder('log').orderBy('log.timestamp', 'DESC').take(limit);
+
+    if (category && category !== 'ALL') {
+      qb.andWhere('log.category = :category', { category });
+    }
+
+    return qb.getMany();
+  }
+}
+</file>
+
+<file path="src/auth/decorators/current-user.decorator.ts">
+import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+
+export const CurrentUser = createParamDecorator(
+  (data: unknown, ctx: ExecutionContext) => {
+    const request = ctx.switchToHttp().getRequest();
+    return request.user;
+  },
+);
+</file>
+
+<file path="src/auth/decorators/roles.decorator.ts">
+import { SetMetadata } from '@nestjs/common';
+import { UserRole } from '../entities/user.entity';
+
+export const ROLES_KEY = 'roles';
+export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
+</file>
+
+<file path="src/auth/entities/user.entity.ts">
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+
+export type UserRole = 'ADMIN' | 'OPERATOR' | 'VIEWER';
+export type UserStatus = 'ACTIVE' | 'PENDING_APPROVAL' | 'SUSPENDED';
+
+@Entity('users')
+export class User {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', length: 100, unique: true })
+  email: string;
+
+  @Column({ type: 'varchar', length: 50, unique: true })
+  username: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  passwordHash: string;
+
+  @Column({ type: 'varchar', length: 100 })
+  fullName: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  phoneNumber: string;
+
+  @Column({ type: 'varchar', length: 20, default: 'OPERATOR' })
+  role: UserRole;
+
+  @Column({ type: 'varchar', length: 20, default: 'PENDING_APPROVAL' })
+  status: UserStatus;
+
+  // Mã Đập được gán phụ trách (Bắt buộc với OPERATOR)
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  assignedDamId: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  lastLoginAt: Date;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+</file>
+
+<file path="src/auth/guards/jwt-auth.guard.ts">
+import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  canActivate(context: ExecutionContext) {
+    return super.canActivate(context);
+  }
+
+  handleRequest(err: any, user: any, info: any) {
+    if (err || !user) {
+      throw err || new UnauthorizedException('Phiên đăng nhập hết hạn hoặc không hợp lệ');
+    }
+    return user;
+  }
+}
+</file>
+
+<file path="src/auth/guards/optional-jwt-auth.guard.ts">
+import { Injectable, ExecutionContext } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+
+@Injectable()
+export class OptionalJwtAuthGuard extends AuthGuard('jwt') {
+  handleRequest(err: any, user: any) {
+    if (err || !user) {
+      return null;
+    }
+    return user;
+  }
+}
+</file>
+
+<file path="src/auth/guards/roles.guard.ts">
+import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { ROLES_KEY } from '../decorators/roles.decorator';
+import { UserRole } from '../entities/user.entity';
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (!requiredRoles || requiredRoles.length === 0) {
+      return true;
+    }
+    const { user } = context.switchToHttp().getRequest();
+    if (!user) {
+      throw new ForbiddenException('Bạn chưa đăng nhập');
+    }
+    if (user.role === 'ADMIN') {
+      return true; // ADMIN có toàn quyền
+    }
+    const hasRole = requiredRoles.includes(user.role);
+    if (!hasRole) {
+      throw new ForbiddenException('Bạn không có quyền thực hiện thao tác này');
+    }
+    return true;
+  }
+}
+</file>
+
+<file path="src/auth/strategies/jwt.strategy.ts">
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User } from '../entities/user.entity';
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy) {
+  constructor(
+    private readonly configService: ConfigService,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+  ) {
+    super({
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        (req) => {
+          let token = null;
+          if (req && req.cookies) {
+            token = req.cookies['access_token'];
+          }
+          return token;
+        },
+      ]),
+      ignoreExpiration: false,
+      secretOrKey: configService.get<string>('JWT_SECRET', 'super-secret-key-dam-monitoring-2026'),
+    });
+  }
+
+  async validate(payload: any) {
+    const user = await this.userRepo.findOne({ where: { id: payload.sub } });
+    if (!user || user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('Tài khoản không tồn tại hoặc chưa được phê duyệt/đang bị khóa');
+    }
+    return user;
+  }
+}
+</file>
+
+<file path="src/auth/auth.controller.ts">
+import {
+  Controller,
+  Post,
+  Get,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+  Res,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
+import type { Response } from 'express';
+import { AuthService } from './auth.service';
+import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto } from './auth.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RolesGuard } from './guards/roles.guard';
+import { Roles } from './decorators/roles.decorator';
+import { CurrentUser } from './decorators/current-user.decorator';
+import { User } from './entities/user.entity';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Post('register')
+  async register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
+  }
+
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
+    const data = await this.authService.login(dto);
+
+    // Lưu Access Token vào Cookie HttpOnly
+    res.cookie('access_token', data.accessToken, {
+      httpOnly: true,
+      secure: false, // Set true khi dùng HTTPS
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày
+    });
+
+    return data;
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  async logout(@Res({ passthrough: true }) res: Response) {
+    res.clearCookie('access_token');
+    return { ok: true, message: 'Đã đăng xuất khỏi hệ thống' };
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMe(@CurrentUser() user: User) {
+    return this.authService.getProfile(user.id);
+  }
+}
+</file>
+
+<file path="src/auth/auth.dto.ts">
+import { UserRole, UserStatus } from './entities/user.entity';
+
+export class RegisterDto {
+  email: string;
+  username: string;
+  password: string;
+  fullName: string;
+  phoneNumber?: string;
+  assignedDamId?: string;
+}
+
+export class LoginDto {
+  usernameOrEmail: string;
+  password: string;
+}
+
+export class ApproveUserDto {
+  role?: UserRole;
+  assignedDamId?: string;
+  status?: UserStatus;
+}
+
+export class UpdateUserDto {
+  fullName?: string;
+  phoneNumber?: string;
+  role?: UserRole;
+  status?: UserStatus;
+  assignedDamId?: string;
+  password?: string;
+}
+</file>
+
+<file path="src/auth/auth.module.ts">
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { User } from './entities/user.entity';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { UserController } from './user.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RolesGuard } from './guards/roles.guard';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([User]),
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET', 'super-secret-key-dam-monitoring-2026'),
+        signOptions: { expiresIn: '7d' },
+      }),
+    }),
+  ],
+  controllers: [AuthController, UserController],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, RolesGuard],
+  exports: [AuthService, JwtAuthGuard, RolesGuard],
+})
+export class AuthModule {}
+</file>
+
+<file path="src/auth/user.controller.ts">
+import {
+  Controller,
+  Get,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { ApproveUserDto, UpdateUserDto } from './auth.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RolesGuard } from './guards/roles.guard';
+import { Roles } from './decorators/roles.decorator';
+
+@Controller('users')
+export class UserController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Get()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  async findAllUsers() {
+    const users = await this.authService.findAllUsers();
+    return { users };
+  }
+
+  @Put(':id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  async approveUser(@Param('id') id: string, @Body() dto: ApproveUserDto) {
+    const user = await this.authService.approveUser(id, dto);
+    return { ok: true, user };
+  }
+
+  @Put(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
+    const user = await this.authService.updateUser(id, dto);
+    return { ok: true, user };
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  async deleteUser(@Param('id') id: string) {
+    return this.authService.deleteUser(id);
+  }
+}
+</file>
+
 <file path="src/camera/entities/camera.entity.ts">
 import {
   Entity,
@@ -571,284 +1067,6 @@ import { SensorModule } from '../sensor/sensor.module';
   exports: [EvidenceService],
 })
 export class EvidenceModule {}
-</file>
-
-<file path="src/evidence/evidence.service.ts">
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, MoreThan } from 'typeorm';
-import { ConfigService } from '@nestjs/config';
-import { Evidence } from './entities/evidence.entity';
-import { AlarmEvent } from '../sensor/entities/alarm-event.entity';
-import { Gateway } from '../gateway/entities/gateway.entity';
-import { Node } from '../node/entities/node.entity';
-import * as Minio from 'minio';
-
-const DEFAULT_DAM_ID = 'dam_1';
-const DEFAULT_NODE_ID = 'NOD-ST01-ESP01';
-
-@Injectable()
-export class EvidenceService implements OnModuleInit {
-  private minioClient!: Minio.Client;
-
-  constructor(
-    @InjectRepository(Evidence)
-    private readonly evidenceRepo: Repository<Evidence>,
-    @InjectRepository(AlarmEvent)
-    private readonly alarmEventRepo: Repository<AlarmEvent>,
-    @InjectRepository(Gateway)
-    private readonly gatewayRepo: Repository<Gateway>,
-    @InjectRepository(Node)
-    private readonly nodeRepo: Repository<Node>,
-    private readonly configService: ConfigService,
-  ) { }
-
-  onModuleInit() {
-    const rawEndpoint = this.configService.get<string>(
-      'MINIO_ENDPOINT',
-      'http://127.0.0.1:9000',
-    );
-    const user = this.configService.get<string>(
-      'MINIO_ROOT_USER',
-      'minioadmin',
-    );
-    const pass = this.configService.get<string>(
-      'MINIO_ROOT_PASSWORD',
-      'minioadmin',
-    );
-
-    try {
-      const urlObj = new URL(rawEndpoint);
-      const port = urlObj.port
-        ? parseInt(urlObj.port, 10)
-        : urlObj.protocol === 'https:'
-          ? 443
-          : 80;
-      this.minioClient = new Minio.Client({
-        endPoint: urlObj.hostname || '127.0.0.1',
-        port,
-        useSSL: urlObj.protocol === 'https:',
-        accessKey: user,
-        secretKey: pass,
-      });
-    } catch {
-      this.minioClient = new Minio.Client({
-        endPoint: '127.0.0.1',
-        port: 9000,
-        useSSL: false,
-        accessKey: user,
-        secretKey: pass,
-      });
-    }
-  }
-
-  /**
-   * Upload evidence image to MinIO with S3 authentication and save metadata to DB.
-   * Also updates or creates AlarmEvent linked by eventId so Frontend shows the capture.
-   */
-  async uploadEvidence(
-    file: { originalname: string; mimetype?: string; buffer: Buffer },
-    gatewayId: string,
-    confidence: number,
-    timestamp: string,
-    eventId?: string,
-    nodeId?: string,
-    thresholdVal?: number,
-    measuredVal?: number,
-  ): Promise<{ evidence: Evidence; updatedAlarm: AlarmEvent | null }> {
-    const minioEndpoint = this.configService.get<string>(
-      'MINIO_ENDPOINT',
-      'http://127.0.0.1:9000',
-    );
-    const bucket = this.configService.get<string>(
-      'MINIO_BUCKET',
-      'dam-images',
-    );
-
-    const safeTimestamp = (timestamp || new Date().toISOString()).replace(
-      /[:.]/g,
-      '-',
-    );
-    const objectKey = `evidence/${gatewayId}/${safeTimestamp}_${file.originalname || 'image.jpg'}`;
-
-    try {
-      // Ensure bucket exists
-      const bucketExists = await this.minioClient
-        .bucketExists(bucket)
-        .catch(() => false);
-      if (!bucketExists) {
-        await this.minioClient.makeBucket(bucket).catch(() => { });
-        await this.minioClient
-          .setBucketPolicy(
-            bucket,
-            JSON.stringify({
-              Version: '2012-10-17',
-              Statement: [
-                {
-                  Effect: 'Allow',
-                  Principal: { AWS: ['*'] },
-                  Action: ['s3:GetObject'],
-                  Resource: [`arn:aws:s3:::${bucket}/*`],
-                },
-              ],
-            }),
-          )
-          .catch(() => { });
-      }
-
-      await this.minioClient.putObject(
-        bucket,
-        objectKey,
-        file.buffer,
-        file.buffer.length,
-        { 'Content-Type': file.mimetype || 'image/jpeg' },
-      );
-      console.log(
-        `[Evidence] Upload ảnh lên MinIO thành công: ${bucket}/${objectKey}`,
-      );
-    } catch (err: any) {
-      console.error(
-        '[Evidence] Lỗi upload ảnh MinIO bằng S3 Client:',
-        err.message,
-      );
-    }
-
-    const imageUrl = `${minioEndpoint}/${bucket}/${objectKey}`;
-
-    // Save metadata to DB
-    const evidence = await this.evidenceRepo.save(
-      this.evidenceRepo.create({
-        gatewayId,
-        imageUrl,
-        eventId: eventId || null,
-        confidence: confidence || null,
-        capturedAt: timestamp ? new Date(timestamp) : new Date(),
-      }),
-    );
-
-    // Resolve dynamic damId, sensorId, and threshold from gateway hierarchy
-    let targetDamId = DEFAULT_DAM_ID;
-    let targetSensorId = nodeId || DEFAULT_NODE_ID;
-    let targetThreshold = thresholdVal ?? 15.0;
-
-    if (gatewayId) {
-      try {
-        const gw = await this.gatewayRepo.findOne({
-          where: { id: gatewayId },
-          relations: { station: true, nodes: true },
-        });
-        if (gw?.station?.damId) {
-          targetDamId = gw.station.damId;
-        }
-        if (!nodeId && gw?.nodes && gw.nodes.length > 0) {
-          targetSensorId = gw.nodes[0].id;
-          if (gw.nodes[0].vibrationThreshold != null) {
-            targetThreshold = gw.nodes[0].vibrationThreshold;
-          }
-        }
-      } catch (err: any) {
-        console.warn('[Evidence] Tra cứu gateway metadata lỗi:', err.message);
-      }
-    }
-
-    if (nodeId && targetDamId === DEFAULT_DAM_ID) {
-      try {
-        const node = await this.nodeRepo.findOne({
-          where: { id: nodeId },
-          relations: { gateway: { station: true } },
-        });
-        if (node?.gateway?.station?.damId) {
-          targetDamId = node.gateway.station.damId;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // Link uploaded evidence image to the corresponding AlarmEvent
-    let updatedAlarm: AlarmEvent | null = null;
-    try {
-      let alarm: AlarmEvent | null = null;
-
-      // 1. Tìm theo eventId nếu có
-      if (eventId) {
-        alarm = await this.alarmEventRepo.findOne({ where: { eventId } });
-      }
-
-      // 2. Nếu chưa có eventId ghép khớp -> Tìm AlarmEvent vừa mới được tạo gần đây (trong 30s) chưa có imageUrl
-      if (!alarm) {
-        const recentCutoff = new Date(Date.now() - 30 * 1000);
-        alarm = await this.alarmEventRepo.findOne({
-          where: [
-            {
-              imageUrl: IsNull(),
-              triggeredAt: MoreThan(recentCutoff),
-              damId: targetDamId,
-            },
-            {
-              imageUrl: IsNull(),
-              triggeredAt: MoreThan(recentCutoff),
-            },
-          ],
-          order: { triggeredAt: 'DESC' },
-        });
-      }
-
-      if (alarm) {
-        // Ghép thành công imageUrl vào AlarmEvent hiện có
-        alarm.imageUrl = imageUrl;
-        if (confidence) alarm.crackConfidence = confidence;
-        alarm.crackDetected = (confidence || 0) > 0;
-        if (eventId && !alarm.eventId) alarm.eventId = eventId;
-        updatedAlarm = await this.alarmEventRepo.save(alarm);
-        console.log(
-          `[Evidence] Đã ghép thành công imageUrl vào Alarm ${alarm.id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${alarm.measuredVal} ${alarm.sensorType}): ${imageUrl}`,
-        );
-      } else {
-        // HTTP upload tới trước MQTT -> Tạo mới AlarmEvent với metadata thực tế
-        const isCrack = (confidence || 0) > 0;
-        const newAlarm = new AlarmEvent();
-        newAlarm.eventId = eventId || undefined;
-        newAlarm.damId = targetDamId;
-        newAlarm.sensorId = targetSensorId;
-        newAlarm.sensorType = 'vibration';
-        newAlarm.severity = isCrack ? 'CRITICAL' : 'ALERT';
-        newAlarm.thresholdVal = targetThreshold;
-        newAlarm.measuredVal = measuredVal || 0;
-        newAlarm.cameraActivated = true;
-        newAlarm.imageUrl = imageUrl;
-        newAlarm.crackConfidence = confidence || 0;
-        newAlarm.crackDetected = isCrack;
-        newAlarm.notes = `Ảnh minh chứng nhận từ Gateway HTTP (${gatewayId}) - Node: ${targetSensorId}`;
-        updatedAlarm = await this.alarmEventRepo.save(newAlarm);
-        console.log(
-          `[Evidence] Tạo mới Alarm ${newAlarm.id} với eventId ${eventId || 'N/A'} (Dam: ${targetDamId}, Sensor: ${targetSensorId})`,
-        );
-      }
-    } catch (err: any) {
-      console.warn('[Evidence] Không thể gán imageUrl vào Alarm:', err.message);
-    }
-
-    return { evidence, updatedAlarm };
-  }
-
-  async findAll(gatewayId?: string, limit = 50): Promise<Evidence[]> {
-    const qb = this.evidenceRepo
-      .createQueryBuilder('e')
-      .orderBy('e.createdAt', 'DESC')
-      .take(limit);
-
-    if (gatewayId) {
-      qb.andWhere('e.gatewayId = :gatewayId', { gatewayId });
-    }
-
-    return qb.getMany();
-  }
-
-  async findById(id: string): Promise<Evidence | null> {
-    return this.evidenceRepo.findOne({ where: { id } });
-  }
-}
 </file>
 
 <file path="src/gateway/entities/gateway.entity.ts">
@@ -1759,6 +1977,267 @@ export class NodeService {
 }
 </file>
 
+<file path="src/sensor/entities/sensor-reading.entity.ts">
+import { Entity, Column, PrimaryColumn } from 'typeorm';
+
+@Entity('sensor_readings')
+export class SensorReading {
+  @PrimaryColumn({ type: 'timestamptz' })
+  time: Date;
+
+  @PrimaryColumn({ type: 'varchar', length: 64 })
+  sensorId: string;
+
+  @PrimaryColumn({ type: 'varchar', length: 32 })
+  sensorType: string; // 'vibration_freq' | 'vibration_amp' | 'water_level' | 'moisture'
+
+  @Column({ type: 'double precision' })
+  value: number;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  unit: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  damId: string;
+}
+</file>
+
+<file path="src/sensor/entities/threshold-config.entity.ts">
+import { Entity, Column, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+
+@Entity('threshold_configs')
+export class ThresholdConfig {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  damId: string;
+
+  @Column({ type: 'varchar', length: 32 })
+  sensorType: string; // 'vibration' | 'water_level' | 'humidity'
+
+  @Column({ type: 'float' })
+  warnLow: number;
+
+  @Column({ type: 'float' })
+  warnHigh: number;
+
+  @Column({ type: 'float' })
+  alertLow: number;
+
+  @Column({ type: 'float' })
+  alertHigh: number;
+
+  @Column({ type: 'float' })
+  criticalHigh: number;
+
+  @Column({ type: 'integer', nullable: true })
+  sustainedSeconds: number; // dùng cho rung động
+
+  @Column({ type: 'boolean', default: true })
+  cameraEnabled: boolean;
+
+  @Column({ type: 'float', default: 50.0 })
+  tankHeight: number; // Chiều cao tối đa để tính % mực nước
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+</file>
+
+<file path="test/app.e2e-spec.ts">
+import { Test, TestingModule } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import request from 'supertest';
+import { App } from 'supertest/types';
+import { AppModule } from './../src/app.module';
+
+describe('AppController (e2e)', () => {
+  let app: INestApplication<App>;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  it('/ (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/')
+      .expect(200)
+      .expect('Hello World!');
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+});
+</file>
+
+<file path="test/jest-e2e.json">
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  }
+}
+</file>
+
+<file path=".dockerignore">
+node_modules
+dist
+.git
+.gitignore
+.env
+Dockerfile
+docker-compose.yml
+README.md
+</file>
+
+<file path=".gitignore">
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+</file>
+
+<file path=".prettierrc">
+{
+  "singleQuote": true,
+  "trailingComma": "all"
+}
+</file>
+
+<file path="Dockerfile">
+# Stage 1: Build ứng dụng NestJS
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files và cài đặt tất cả dependencies để build
+COPY package*.json ./
+RUN npm ci
+
+# Copy toàn bộ mã nguồn và build ra dist
+COPY . .
+RUN npm run build
+
+# Stage 2: Chạy ứng dụng phiên bản Production
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Sao chép package.json và cài đặt duy nhất production dependencies
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Sao chép thư mục dist đã biên dịch từ stage builder
+COPY --from=builder /app/dist ./dist
+
+# Port ứng dụng NestJS
+EXPOSE 3001
+
+CMD ["node", "dist/main"]
+</file>
+
+<file path="eslint.config.mjs">
+// @ts-check
+import eslint from '@eslint/js';
+import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended';
+import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  {
+    ignores: ['eslint.config.mjs'],
+  },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  eslintPluginPrettierRecommended,
+  {
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.jest,
+      },
+      sourceType: 'commonjs',
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-floating-promises': 'warn',
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+      "prettier/prettier": ["error", { endOfLine: "auto" }],
+    },
+  },
+);
+</file>
+
 <file path="main.py">
 import os
 import cv2
@@ -2542,915 +3021,6 @@ if __name__ == "__main__":
     gateway.run()
 </file>
 
-<file path="mosquitto/config/mosquitto.conf">
-listener 1883 0.0.0.0
-allow_anonymous true
-</file>
-
-<file path="src/audit-log/entities/system-log.entity.ts">
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-} from 'typeorm';
-
-@Entity('system_logs')
-export class SystemLog {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ length: 50 })
-  action: string; // e.g. LOGIN, REGISTER, UPDATE_DAM, UPDATE_STATION, UPDATE_THRESHOLD
-
-  @Column({ length: 50 })
-  category: string; // AUTH, DAM, STATION, THRESHOLD
-
-  @Column({ type: 'text' })
-  description: string;
-
-  @Column({ length: 100, nullable: true })
-  username: string;
-
-  @Column({ length: 50, nullable: true })
-  userRole: string;
-
-  @Column({ length: 50, nullable: true })
-  ipAddress: string;
-
-  @Column({ type: 'json', nullable: true })
-  metadata: any;
-
-  @CreateDateColumn()
-  timestamp: Date;
-}
-</file>
-
-<file path="src/audit-log/audit-log.controller.ts">
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { AuditLogService } from './audit-log.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
-
-@Controller('audit-logs')
-export class AuditLogController {
-  constructor(private readonly auditLogService: AuditLogService) {}
-
-  @Get()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  async findAll(
-    @Query('category') category?: string,
-    @Query('limit') limit?: string,
-  ) {
-    const maxLimit = limit ? parseInt(limit, 10) : 100;
-    const logs = await this.auditLogService.findAll(category, maxLimit);
-    return { logs };
-  }
-}
-</file>
-
-<file path="src/audit-log/audit-log.module.ts">
-import { Module, Global } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { SystemLog } from './entities/system-log.entity';
-import { AuditLogService } from './audit-log.service';
-import { AuditLogController } from './audit-log.controller';
-
-@Global()
-@Module({
-  imports: [TypeOrmModule.forFeature([SystemLog])],
-  controllers: [AuditLogController],
-  providers: [AuditLogService],
-  exports: [AuditLogService],
-})
-export class AuditLogModule {}
-</file>
-
-<file path="src/audit-log/audit-log.service.ts">
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { SystemLog } from './entities/system-log.entity';
-
-@Injectable()
-export class AuditLogService {
-  constructor(
-    @InjectRepository(SystemLog)
-    private readonly logRepo: Repository<SystemLog>,
-  ) {}
-
-  async logAction(data: {
-    action: string;
-    category: 'AUTH' | 'DAM' | 'STATION' | 'THRESHOLD';
-    description: string;
-    username?: string;
-    userRole?: string;
-    ipAddress?: string;
-    metadata?: any;
-  }): Promise<SystemLog> {
-    try {
-      const entry = this.logRepo.create({
-        action: data.action,
-        category: data.category,
-        description: data.description,
-        username: data.username || 'System',
-        userRole: data.userRole || 'SYSTEM',
-        ipAddress: data.ipAddress || undefined,
-        metadata: data.metadata || null,
-      });
-      return await this.logRepo.save(entry);
-    } catch (err: any) {
-      console.error('[AuditLogService] Error saving log:', err.message);
-      return null as any;
-    }
-  }
-
-  async findAll(category?: string, limit = 100): Promise<SystemLog[]> {
-    const qb = this.logRepo.createQueryBuilder('log').orderBy('log.timestamp', 'DESC').take(limit);
-
-    if (category && category !== 'ALL') {
-      qb.andWhere('log.category = :category', { category });
-    }
-
-    return qb.getMany();
-  }
-}
-</file>
-
-<file path="src/auth/decorators/current-user.decorator.ts">
-import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-
-export const CurrentUser = createParamDecorator(
-  (data: unknown, ctx: ExecutionContext) => {
-    const request = ctx.switchToHttp().getRequest();
-    return request.user;
-  },
-);
-</file>
-
-<file path="src/auth/decorators/roles.decorator.ts">
-import { SetMetadata } from '@nestjs/common';
-import { UserRole } from '../entities/user.entity';
-
-export const ROLES_KEY = 'roles';
-export const Roles = (...roles: UserRole[]) => SetMetadata(ROLES_KEY, roles);
-</file>
-
-<file path="src/auth/entities/user.entity.ts">
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
-
-export type UserRole = 'ADMIN' | 'OPERATOR' | 'VIEWER';
-export type UserStatus = 'ACTIVE' | 'PENDING_APPROVAL' | 'SUSPENDED';
-
-@Entity('users')
-export class User {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ type: 'varchar', length: 100, unique: true })
-  email: string;
-
-  @Column({ type: 'varchar', length: 50, unique: true })
-  username: string;
-
-  @Column({ type: 'varchar', length: 255 })
-  passwordHash: string;
-
-  @Column({ type: 'varchar', length: 100 })
-  fullName: string;
-
-  @Column({ type: 'varchar', length: 20, nullable: true })
-  phoneNumber: string;
-
-  @Column({ type: 'varchar', length: 20, default: 'OPERATOR' })
-  role: UserRole;
-
-  @Column({ type: 'varchar', length: 20, default: 'PENDING_APPROVAL' })
-  status: UserStatus;
-
-  // Mã Đập được gán phụ trách (Bắt buộc với OPERATOR)
-  @Column({ type: 'varchar', length: 64, nullable: true })
-  assignedDamId: string;
-
-  @Column({ type: 'timestamptz', nullable: true })
-  lastLoginAt: Date;
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-</file>
-
-<file path="src/auth/guards/jwt-auth.guard.ts">
-import { Injectable, ExecutionContext, UnauthorizedException } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-
-@Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {
-  canActivate(context: ExecutionContext) {
-    return super.canActivate(context);
-  }
-
-  handleRequest(err: any, user: any, info: any) {
-    if (err || !user) {
-      throw err || new UnauthorizedException('Phiên đăng nhập hết hạn hoặc không hợp lệ');
-    }
-    return user;
-  }
-}
-</file>
-
-<file path="src/auth/guards/optional-jwt-auth.guard.ts">
-import { Injectable, ExecutionContext } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-
-@Injectable()
-export class OptionalJwtAuthGuard extends AuthGuard('jwt') {
-  handleRequest(err: any, user: any) {
-    if (err || !user) {
-      return null;
-    }
-    return user;
-  }
-}
-</file>
-
-<file path="src/auth/guards/roles.guard.ts">
-import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ROLES_KEY } from '../decorators/roles.decorator';
-import { UserRole } from '../entities/user.entity';
-
-@Injectable()
-export class RolesGuard implements CanActivate {
-  constructor(private reflector: Reflector) {}
-
-  canActivate(context: ExecutionContext): boolean {
-    const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (!requiredRoles || requiredRoles.length === 0) {
-      return true;
-    }
-    const { user } = context.switchToHttp().getRequest();
-    if (!user) {
-      throw new ForbiddenException('Bạn chưa đăng nhập');
-    }
-    if (user.role === 'ADMIN') {
-      return true; // ADMIN có toàn quyền
-    }
-    const hasRole = requiredRoles.includes(user.role);
-    if (!hasRole) {
-      throw new ForbiddenException('Bạn không có quyền thực hiện thao tác này');
-    }
-    return true;
-  }
-}
-</file>
-
-<file path="src/auth/strategies/jwt.strategy.ts">
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy } from 'passport-jwt';
-import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from '../entities/user.entity';
-
-@Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(
-    private readonly configService: ConfigService,
-    @InjectRepository(User)
-    private readonly userRepo: Repository<User>,
-  ) {
-    super({
-      jwtFromRequest: ExtractJwt.fromExtractors([
-        ExtractJwt.fromAuthHeaderAsBearerToken(),
-        (req) => {
-          let token = null;
-          if (req && req.cookies) {
-            token = req.cookies['access_token'];
-          }
-          return token;
-        },
-      ]),
-      ignoreExpiration: false,
-      secretOrKey: configService.get<string>('JWT_SECRET', 'super-secret-key-dam-monitoring-2026'),
-    });
-  }
-
-  async validate(payload: any) {
-    const user = await this.userRepo.findOne({ where: { id: payload.sub } });
-    if (!user || user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Tài khoản không tồn tại hoặc chưa được phê duyệt/đang bị khóa');
-    }
-    return user;
-  }
-}
-</file>
-
-<file path="src/auth/auth.controller.ts">
-import {
-  Controller,
-  Post,
-  Get,
-  Put,
-  Delete,
-  Body,
-  Param,
-  UseGuards,
-  Res,
-  HttpCode,
-  HttpStatus,
-} from '@nestjs/common';
-import type { Response } from 'express';
-import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto } from './auth.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { RolesGuard } from './guards/roles.guard';
-import { Roles } from './decorators/roles.decorator';
-import { CurrentUser } from './decorators/current-user.decorator';
-import { User } from './entities/user.entity';
-
-@Controller('auth')
-export class AuthController {
-  constructor(private readonly authService: AuthService) {}
-
-  @Post('register')
-  async register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
-  }
-
-  @Post('login')
-  @HttpCode(HttpStatus.OK)
-  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const data = await this.authService.login(dto);
-
-    // Lưu Access Token vào Cookie HttpOnly
-    res.cookie('access_token', data.accessToken, {
-      httpOnly: true,
-      secure: false, // Set true khi dùng HTTPS
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày
-    });
-
-    return data;
-  }
-
-  @Post('logout')
-  @HttpCode(HttpStatus.OK)
-  async logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie('access_token');
-    return { ok: true, message: 'Đã đăng xuất khỏi hệ thống' };
-  }
-
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  async getMe(@CurrentUser() user: User) {
-    return this.authService.getProfile(user.id);
-  }
-}
-</file>
-
-<file path="src/auth/auth.dto.ts">
-import { UserRole, UserStatus } from './entities/user.entity';
-
-export class RegisterDto {
-  email: string;
-  username: string;
-  password: string;
-  fullName: string;
-  phoneNumber?: string;
-  assignedDamId?: string;
-}
-
-export class LoginDto {
-  usernameOrEmail: string;
-  password: string;
-}
-
-export class ApproveUserDto {
-  role?: UserRole;
-  assignedDamId?: string;
-  status?: UserStatus;
-}
-
-export class UpdateUserDto {
-  fullName?: string;
-  phoneNumber?: string;
-  role?: UserRole;
-  status?: UserStatus;
-  assignedDamId?: string;
-  password?: string;
-}
-</file>
-
-<file path="src/auth/auth.module.ts">
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { User } from './entities/user.entity';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { UserController } from './user.controller';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { RolesGuard } from './guards/roles.guard';
-
-@Module({
-  imports: [
-    TypeOrmModule.forFeature([User]),
-    PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET', 'super-secret-key-dam-monitoring-2026'),
-        signOptions: { expiresIn: '7d' },
-      }),
-    }),
-  ],
-  controllers: [AuthController, UserController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard, RolesGuard],
-  exports: [AuthService, JwtAuthGuard, RolesGuard],
-})
-export class AuthModule {}
-</file>
-
-<file path="src/auth/user.controller.ts">
-import {
-  Controller,
-  Get,
-  Put,
-  Delete,
-  Body,
-  Param,
-  UseGuards,
-} from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { ApproveUserDto, UpdateUserDto } from './auth.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { RolesGuard } from './guards/roles.guard';
-import { Roles } from './decorators/roles.decorator';
-
-@Controller('users')
-export class UserController {
-  constructor(private readonly authService: AuthService) {}
-
-  @Get()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  async findAllUsers() {
-    const users = await this.authService.findAllUsers();
-    return { users };
-  }
-
-  @Put(':id/approve')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  async approveUser(@Param('id') id: string, @Body() dto: ApproveUserDto) {
-    const user = await this.authService.approveUser(id, dto);
-    return { ok: true, user };
-  }
-
-  @Put(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  async updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    const user = await this.authService.updateUser(id, dto);
-    return { ok: true, user };
-  }
-
-  @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  async deleteUser(@Param('id') id: string) {
-    return this.authService.deleteUser(id);
-  }
-}
-</file>
-
-<file path="src/dam/dam.module.ts">
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { Dam } from './entities/dam.entity';
-import { Station } from './entities/station.entity';
-import { Gateway } from '../gateway/entities/gateway.entity';
-import { Camera } from '../camera/entities/camera.entity';
-import { Node } from '../node/entities/node.entity';
-import { Sensor } from '../node/entities/sensor.entity';
-import { DamService } from './dam.service';
-import { DamController } from './dam.controller';
-
-@Module({
-  imports: [TypeOrmModule.forFeature([Dam, Station, Gateway, Camera, Node, Sensor])],
-  controllers: [DamController],
-  providers: [DamService],
-  exports: [DamService],
-})
-export class DamModule {}
-</file>
-
-<file path="src/sensor/entities/sensor-reading.entity.ts">
-import { Entity, Column, PrimaryColumn } from 'typeorm';
-
-@Entity('sensor_readings')
-export class SensorReading {
-  @PrimaryColumn({ type: 'timestamptz' })
-  time: Date;
-
-  @PrimaryColumn({ type: 'varchar', length: 64 })
-  sensorId: string;
-
-  @PrimaryColumn({ type: 'varchar', length: 32 })
-  sensorType: string; // 'vibration_freq' | 'vibration_amp' | 'water_level' | 'moisture'
-
-  @Column({ type: 'double precision' })
-  value: number;
-
-  @Column({ type: 'varchar', length: 16, nullable: true })
-  unit: string;
-
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
-}
-</file>
-
-<file path="src/sensor/entities/threshold-config.entity.ts">
-import { Entity, Column, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-
-@Entity('threshold_configs')
-export class ThresholdConfig {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
-
-  @Column({ type: 'varchar', length: 32 })
-  sensorType: string; // 'vibration' | 'water_level' | 'humidity'
-
-  @Column({ type: 'float' })
-  warnLow: number;
-
-  @Column({ type: 'float' })
-  warnHigh: number;
-
-  @Column({ type: 'float' })
-  alertLow: number;
-
-  @Column({ type: 'float' })
-  alertHigh: number;
-
-  @Column({ type: 'float' })
-  criticalHigh: number;
-
-  @Column({ type: 'integer', nullable: true })
-  sustainedSeconds: number; // dùng cho rung động
-
-  @Column({ type: 'boolean', default: true })
-  cameraEnabled: boolean;
-
-  @Column({ type: 'float', default: 50.0 })
-  tankHeight: number; // Chiều cao tối đa để tính % mực nước
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-</file>
-
-<file path="src/sensor/sensor-buffer.service.ts">
-import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { SensorReading } from './entities/sensor-reading.entity';
-
-@Injectable()
-export class SensorBufferService implements OnModuleDestroy {
-  private readonly logger = new Logger('SensorBuffer');
-  private buffer: SensorReading[] = [];
-  private bufferKeys: Set<string> = new Set();
-  private retryQueue: SensorReading[][] = [];
-  
-  private readonly FLUSH_INTERVAL_MS = 2000;  // flush mỗi 2 giây
-  private readonly FLUSH_SIZE = 100;          // hoặc khi đủ 100 bản ghi
-  private readonly MAX_BUFFER_CAPACITY = 10000; // giới hạn chống tràn RAM
-  private readonly CHUNK_SIZE = 500;          // chia nhỏ batch khi ghi DB
-  private isFlushing = false;
-  private intervalId: NodeJS.Timeout;
-
-  constructor(
-    @InjectRepository(SensorReading)
-    private readonly sensorReadingRepo: Repository<SensorReading>,
-  ) {
-    this.intervalId = setInterval(() => this.flush(), this.FLUSH_INTERVAL_MS);
-  }
-
-  push(reading: SensorReading) {
-    // Chống tràn bộ nhớ nếu DB gặp sự cố kéo dài (Backpressure)
-    if (this.buffer.length >= this.MAX_BUFFER_CAPACITY) {
-      this.logger.warn(
-        `[SensorBuffer] Buffer đã đạt giới hạn tối đa (${this.MAX_BUFFER_CAPACITY}), loại bỏ bản ghi cũ nhất để bảo vệ hệ thống.`,
-      );
-      const dropped = this.buffer.shift();
-      if (dropped) {
-        this.bufferKeys.delete(
-          `${dropped.sensorId}:${dropped.sensorType}:${dropped.time.getTime()}`,
-        );
-      }
-    }
-
-    let timeMs = reading.time.getTime();
-    let key = `${reading.sensorId}:${reading.sensorType}:${timeMs}`;
-
-    // O(1) kiểm tra trùng timestamp khoá chính bằng Set
-    while (this.bufferKeys.has(key)) {
-      timeMs += 1;
-      reading.time = new Date(timeMs);
-      key = `${reading.sensorId}:${reading.sensorType}:${timeMs}`;
-    }
-
-    this.bufferKeys.add(key);
-    this.buffer.push(reading);
-
-    if (this.buffer.length >= this.FLUSH_SIZE && !this.isFlushing) {
-      this.flush();
-    }
-  }
-
-  async flush() {
-    if (this.isFlushing) return;
-    this.isFlushing = true;
-
-    try {
-      // 1. Thử ghi lại các batch retry trước đó nếu có
-      if (this.retryQueue.length > 0) {
-        const retryBatch = this.retryQueue.shift();
-        if (retryBatch && retryBatch.length > 0) {
-          await this.writeChunk(retryBatch, true);
-        }
-      }
-
-      if (this.buffer.length === 0) return;
-
-      // 2. Lấy toàn bộ bản ghi hiện có trong buffer
-      const batch = this.buffer.splice(0, this.buffer.length);
-      this.bufferKeys.clear();
-
-      // 3. Chia nhỏ batch nếu quá lớn để tối ưu hóa SQL execution plan
-      for (let i = 0; i < batch.length; i += this.CHUNK_SIZE) {
-        const chunk = batch.slice(i, i + this.CHUNK_SIZE);
-        await this.writeChunk(chunk, false);
-      }
-    } finally {
-      this.isFlushing = false;
-    }
-  }
-
-  private async writeChunk(chunk: SensorReading[], isRetry: boolean) {
-    try {
-      await this.sensorReadingRepo.insert(chunk);
-      this.logger.log(
-        `[SensorBuffer] Đã lưu ${chunk.length} bản ghi cảm biến vào database${isRetry ? ' (Retry)' : ''}.`,
-      );
-    } catch (error: any) {
-      // Nếu bị trùng khoá chính ("time", "sensorId", "sensorType") trong cùng millisecond
-      if (error?.code === '23505') {
-        let insertedCount = 0;
-        for (const item of chunk) {
-          try {
-            await this.sensorReadingRepo.insert(item);
-            insertedCount++;
-          } catch {
-            // Bỏ qua bản ghi trùng
-          }
-        }
-        this.logger.log(
-          `[SensorBuffer] Đã lưu ${insertedCount}/${chunk.length} bản ghi (đã lọc bản ghi trùng khoá).`,
-        );
-      } else {
-        this.logger.error(
-          `[SensorBuffer] Lỗi khi ghi hàng loạt vào database: ${error.message || error}`,
-        );
-        // Lưu vào hàng đợi retry nếu chưa retry
-        if (!isRetry && this.retryQueue.length < 20) {
-          this.retryQueue.push(chunk);
-        }
-      }
-    }
-  }
-
-  async onModuleDestroy() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-    }
-    // Ghi nốt dữ liệu còn sót lại khi tắt ứng dụng
-    await this.flush();
-  }
-}
-</file>
-
-<file path="test/app.e2e-spec.ts">
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import request from 'supertest';
-import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-
-describe('AppController (e2e)', () => {
-  let app: INestApplication<App>;
-
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    await app.init();
-  });
-
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
-  });
-
-  afterEach(async () => {
-    await app.close();
-  });
-});
-</file>
-
-<file path="test/jest-e2e.json">
-{
-  "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
-  "testEnvironment": "node",
-  "testRegex": ".e2e-spec.ts$",
-  "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
-}
-</file>
-
-<file path=".dockerignore">
-node_modules
-dist
-.git
-.gitignore
-.env
-Dockerfile
-docker-compose.yml
-README.md
-</file>
-
-<file path=".gitignore">
-# compiled output
-/dist
-/node_modules
-/build
-
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
-.DS_Store
-
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-</file>
-
-<file path=".prettierrc">
-{
-  "singleQuote": true,
-  "trailingComma": "all"
-}
-</file>
-
-<file path="Dockerfile">
-# Stage 1: Build ứng dụng NestJS
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-# Copy package files và cài đặt tất cả dependencies để build
-COPY package*.json ./
-RUN npm ci
-
-# Copy toàn bộ mã nguồn và build ra dist
-COPY . .
-RUN npm run build
-
-# Stage 2: Chạy ứng dụng phiên bản Production
-FROM node:20-alpine AS runner
-
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-# Sao chép package.json và cài đặt duy nhất production dependencies
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Sao chép thư mục dist đã biên dịch từ stage builder
-COPY --from=builder /app/dist ./dist
-
-# Port ứng dụng NestJS
-EXPOSE 3001
-
-CMD ["node", "dist/main"]
-</file>
-
-<file path="eslint.config.mjs">
-// @ts-check
-import eslint from '@eslint/js';
-import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended';
-import globals from 'globals';
-import tseslint from 'typescript-eslint';
-
-export default tseslint.config(
-  {
-    ignores: ['eslint.config.mjs'],
-  },
-  eslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
-  eslintPluginPrettierRecommended,
-  {
-    languageOptions: {
-      globals: {
-        ...globals.node,
-        ...globals.jest,
-      },
-      sourceType: 'commonjs',
-      parserOptions: {
-        projectService: true,
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-  },
-  {
-    rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
-      "prettier/prettier": ["error", { endOfLine: "auto" }],
-    },
-  },
-);
-</file>
-
 <file path="nest-cli.json">
 {
   "$schema": "https://json.schemastore.org/nest-cli",
@@ -3731,83 +3301,6 @@ export class AuthService implements OnModuleInit {
 }
 </file>
 
-<file path="src/dam/entities/station.entity.ts">
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
-import { Dam } from './dam.entity';
-import { Gateway } from '../../gateway/entities/gateway.entity';
-
-@Entity('stations')
-export class Station {
-  @PrimaryGeneratedColumn()
-  id: number;
-
-  // Station code used in child device IDs (e.g. 'ST01' → GTW-ST01-TX2A, NOD-ST01-ESP01)
-  @Column({ type: 'varchar', length: 16, nullable: true })
-  stationCode: string;
-
-  @Column({ type: 'varchar', length: 200 })
-  name: string;
-
-  @Column({ type: 'varchar', length: 200, nullable: true })
-  location: string;
-
-  @Column({ type: 'double precision', nullable: true })
-  latitude: number;
-
-  @Column({ type: 'double precision', nullable: true })
-  longitude: number;
-
-  @Column({ type: 'varchar', length: 100, nullable: true })
-  river: string;
-
-  @Column({ type: 'varchar', length: 64, nullable: true })
-  km: string;
-
-  @Column({ type: 'varchar', length: 16, default: 'safe' })
-  status: string;
-
-  @Column({ type: 'float', default: 0 })
-  waterLevel: number;
-
-  @Column({ type: 'float', default: 0 })
-  change: number;
-
-  @Column({ type: 'float', default: 0 })
-  pressure: number;
-
-  @Column({ type: 'float', default: 0 })
-  flow: number;
-
-  @Column({ type: 'float', default: 0 })
-  humidity: number;
-
-  @Column({ type: 'float', default: 0 })
-  bd1: number;
-
-  @Column({ type: 'float', default: 0 })
-  bd2: number;
-
-  @Column({ type: 'float', default: 0 })
-  bd3: number;
-
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
-
-  @ManyToOne(() => Dam, dam => dam.stations, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'damId' })
-  dam: Dam;
-
-  @OneToMany(() => Gateway, gateway => gateway.station, { cascade: true })
-  gateways: Gateway[];
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-</file>
-
 <file path="src/dam/dam.controller.ts">
 import {
   Controller,
@@ -3909,70 +3402,266 @@ export class DamController {
 }
 </file>
 
-<file path="src/sensor/entities/alarm-event.entity.ts">
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn } from 'typeorm';
+<file path="src/dam/dam.module.ts">
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { Dam } from './entities/dam.entity';
+import { Station } from './entities/station.entity';
+import { Gateway } from '../gateway/entities/gateway.entity';
+import { Camera } from '../camera/entities/camera.entity';
+import { Node } from '../node/entities/node.entity';
+import { Sensor } from '../node/entities/sensor.entity';
+import { DamService } from './dam.service';
+import { DamController } from './dam.controller';
 
-@Entity('alarm_events')
-export class AlarmEvent {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+@Module({
+  imports: [TypeOrmModule.forFeature([Dam, Station, Gateway, Camera, Node, Sensor])],
+  controllers: [DamController],
+  providers: [DamService],
+  exports: [DamService],
+})
+export class DamModule {}
+</file>
 
-  @Column({ type: 'varchar', length: 64, nullable: true, unique: true })
-  eventId?: string;
+<file path="src/evidence/evidence.service.ts">
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, IsNull, MoreThan } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import { Evidence } from './entities/evidence.entity';
+import { AlarmEvent } from '../sensor/entities/alarm-event.entity';
+import { Gateway } from '../gateway/entities/gateway.entity';
+import { Node } from '../node/entities/node.entity';
+import * as Minio from 'minio';
 
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
+const DEFAULT_DAM_ID = 'dam_1';
+const DEFAULT_NODE_ID = 'NOD-ST01-ESP01';
 
-  @Column({ type: 'varchar', length: 64 })
-  sensorId: string;
+@Injectable()
+export class EvidenceService implements OnModuleInit {
+  private minioClient!: Minio.Client;
 
-  @Column({ type: 'varchar', length: 32 })
-  sensorType: string;
+  constructor(
+    @InjectRepository(Evidence)
+    private readonly evidenceRepo: Repository<Evidence>,
+    @InjectRepository(AlarmEvent)
+    private readonly alarmEventRepo: Repository<AlarmEvent>,
+    @InjectRepository(Gateway)
+    private readonly gatewayRepo: Repository<Gateway>,
+    @InjectRepository(Node)
+    private readonly nodeRepo: Repository<Node>,
+    private readonly configService: ConfigService,
+  ) { }
 
-  @Column({ type: 'varchar', length: 16 })
-  severity: string; // 'WARNING' | 'ALERT' | 'CRITICAL'
+  onModuleInit() {
+    const rawEndpoint = this.configService.get<string>(
+      'MINIO_ENDPOINT',
+      'http://127.0.0.1:9000',
+    );
+    const user = this.configService.get<string>(
+      'MINIO_ROOT_USER',
+      'minioadmin',
+    );
+    const pass = this.configService.get<string>(
+      'MINIO_ROOT_PASSWORD',
+      'minioadmin',
+    );
 
-  @Column({ type: 'float' })
-  thresholdVal: number;
+    try {
+      const urlObj = new URL(rawEndpoint);
+      const port = urlObj.port
+        ? parseInt(urlObj.port, 10)
+        : urlObj.protocol === 'https:'
+          ? 443
+          : 80;
+      this.minioClient = new Minio.Client({
+        endPoint: urlObj.hostname || '127.0.0.1',
+        port,
+        useSSL: urlObj.protocol === 'https:',
+        accessKey: user,
+        secretKey: pass,
+      });
+    } catch {
+      this.minioClient = new Minio.Client({
+        endPoint: '127.0.0.1',
+        port: 9000,
+        useSSL: false,
+        accessKey: user,
+        secretKey: pass,
+      });
+    }
+  }
 
-  @Column({ type: 'float' })
-  measuredVal: number;
+  /**
+   * Upload evidence image to MinIO with S3 authentication and save metadata to DB.
+   * Also updates or creates AlarmEvent linked by eventId so Frontend shows the capture.
+   */
+  async uploadEvidence(
+    file: { originalname: string; mimetype?: string; buffer: Buffer },
+    gatewayId: string,
+    confidence: number,
+    timestamp: string,
+    eventId?: string,
+    nodeId?: string,
+    thresholdVal?: number,
+    measuredVal?: number,
+  ): Promise<{ evidence: Evidence; updatedAlarm: AlarmEvent | null }> {
+    const minioEndpoint = this.configService.get<string>(
+      'MINIO_ENDPOINT',
+      'http://127.0.0.1:9000',
+    );
+    const bucket = this.configService.get<string>(
+      'MINIO_BUCKET',
+      'dam-images',
+    );
 
-  @Column({ type: 'integer', nullable: true })
-  durationS: number; // số giây vượt ngưỡng liên tiếp
+    const safeTimestamp = (timestamp || new Date().toISOString()).replace(
+      /[:.]/g,
+      '-',
+    );
+    const objectKey = `evidence/${gatewayId}/${safeTimestamp}_${file.originalname || 'image.jpg'}`;
 
-  @CreateDateColumn({ type: 'timestamptz' })
-  triggeredAt: Date;
+    try {
+      // Ensure bucket exists
+      const bucketExists = await this.minioClient
+        .bucketExists(bucket)
+        .catch(() => false);
+      if (!bucketExists) {
+        await this.minioClient.makeBucket(bucket).catch(() => { });
+        await this.minioClient
+          .setBucketPolicy(
+            bucket,
+            JSON.stringify({
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Principal: { AWS: ['*'] },
+                  Action: ['s3:GetObject'],
+                  Resource: [`arn:aws:s3:::${bucket}/*`],
+                },
+              ],
+            }),
+          )
+          .catch(() => { });
+      }
 
-  @Column({ type: 'timestamptz', nullable: true })
-  resolvedAt: Date;
+      await this.minioClient.putObject(
+        bucket,
+        objectKey,
+        file.buffer,
+        file.buffer.length,
+        { 'Content-Type': file.mimetype || 'image/jpeg' },
+      );
+      console.log(
+        `[Evidence] Upload ảnh lên MinIO thành công: ${bucket}/${objectKey}`,
+      );
+    } catch (err: any) {
+      console.error(
+        '[Evidence] Lỗi upload ảnh MinIO bằng S3 Client:',
+        err.message,
+      );
+    }
 
-  @Column({ type: 'boolean', default: false })
-  cameraActivated: boolean;
+    const imageUrl = `${minioEndpoint}/${bucket}/${objectKey}`;
 
-  @Column({ type: 'text', nullable: true })
-  imageUrl: string; // URL MinIO
+    // Save metadata to DB
+    const evidence = await this.evidenceRepo.save(
+      this.evidenceRepo.create({
+        gatewayId,
+        imageUrl,
+        eventId: eventId || null,
+        confidence: confidence || null,
+        capturedAt: timestamp ? new Date(timestamp) : new Date(),
+      }),
+    );
 
-  @Column({ type: 'integer', nullable: true })
-  stationId: number;
+    // Resolve dynamic damId, sensorId, and threshold from gateway hierarchy
+    let targetDamId = DEFAULT_DAM_ID;
+    let targetSensorId = nodeId || DEFAULT_NODE_ID;
+    let targetThreshold = thresholdVal ?? 15.0;
 
-  @Column({ type: 'varchar', length: 200, nullable: true })
-  stationName: string;
+    if (gatewayId) {
+      try {
+        const gw = await this.gatewayRepo.findOne({
+          where: { id: gatewayId },
+          relations: { station: true, nodes: true },
+        });
+        if (gw?.station?.damId) {
+          targetDamId = gw.station.damId;
+        }
+        if (!nodeId && gw?.nodes && gw.nodes.length > 0) {
+          targetSensorId = gw.nodes[0].id;
+          if (gw.nodes[0].vibrationThreshold != null) {
+            targetThreshold = gw.nodes[0].vibrationThreshold;
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Evidence] Tra cứu gateway metadata lỗi:', err.message);
+      }
+    }
 
-  @Column({ type: 'varchar', length: 200, nullable: true })
-  damName: string;
+    if (nodeId && targetDamId === DEFAULT_DAM_ID) {
+      try {
+        const node = await this.nodeRepo.findOne({
+          where: { id: nodeId },
+          relations: { gateway: { station: true } },
+        });
+        if (node?.gateway?.station?.damId) {
+          targetDamId = node.gateway.station.damId;
+        }
+      } catch {
+        // ignore
+      }
+    }
 
-  @Column({ type: 'varchar', length: 250, nullable: true })
-  location: string;
+    // Link uploaded evidence image to the corresponding AlarmEvent
+    let updatedAlarm: AlarmEvent | null = null;
+    try {
+      let alarm: AlarmEvent | null = null;
+      // 1. Tìm chính xác AlarmEvent theo eventId của sự cố
+      if (eventId) {
+        alarm = await this.alarmEventRepo.findOne({ where: { eventId } });
+      }
 
-  @Column({ type: 'boolean', nullable: true })
-  crackDetected: boolean;
+      if (alarm) {
+        // Ghép thành công imageUrl vào AlarmEvent hiện có
+        alarm.imageUrl = imageUrl;
+        if (confidence) alarm.crackConfidence = confidence;
+        alarm.crackDetected = (confidence || 0) > 0;
+        if (eventId && !alarm.eventId) alarm.eventId = eventId;
+        updatedAlarm = await this.alarmEventRepo.save(alarm);
+        console.log(
+          `[Evidence] Đã ghép thành công imageUrl vào Alarm ${alarm.id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${alarm.measuredVal} ${alarm.sensorType}): ${imageUrl}`,
+        );
+      } else {
+        console.log(
+          `[Evidence] Chưa tìm thấy AlarmEvent cho eventId ${eventId || 'N/A'}. File ảnh đã lưu an toàn vào Evidence DB để ghép khớp khi MQTT anomaly đến.`,
+        );
+      }
+    } catch (err: any) {
+      console.warn('[Evidence] Không thể gán imageUrl vào Alarm:', err.message);
+    }
 
-  @Column({ type: 'float', nullable: true })
-  crackConfidence: number;
+    return { evidence, updatedAlarm };
+  }
 
-  @Column({ type: 'text', nullable: true })
-  notes: string;
+  async findAll(gatewayId?: string, limit = 50): Promise<Evidence[]> {
+    const qb = this.evidenceRepo
+      .createQueryBuilder('e')
+      .orderBy('e.createdAt', 'DESC')
+      .take(limit);
+
+    if (gatewayId) {
+      qb.andWhere('e.gatewayId = :gatewayId', { gatewayId });
+    }
+
+    return qb.getMany();
+  }
+
+  async findById(id: string): Promise<Evidence | null> {
+    return this.evidenceRepo.findOne({ where: { id } });
+  }
 }
 </file>
 
@@ -4123,6 +3812,137 @@ export class DownsamplerService implements OnApplicationBootstrap {
 }
 </file>
 
+<file path="src/sensor/sensor-buffer.service.ts">
+import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SensorReading } from './entities/sensor-reading.entity';
+
+@Injectable()
+export class SensorBufferService implements OnModuleDestroy {
+  private readonly logger = new Logger('SensorBuffer');
+  private buffer: SensorReading[] = [];
+  private bufferKeys: Set<string> = new Set();
+  private retryQueue: SensorReading[][] = [];
+  
+  private readonly FLUSH_INTERVAL_MS = 2000;  // flush mỗi 2 giây
+  private readonly FLUSH_SIZE = 100;          // hoặc khi đủ 100 bản ghi
+  private readonly MAX_BUFFER_CAPACITY = 10000; // giới hạn chống tràn RAM
+  private readonly CHUNK_SIZE = 500;          // chia nhỏ batch khi ghi DB
+  private isFlushing = false;
+  private intervalId: NodeJS.Timeout;
+
+  constructor(
+    @InjectRepository(SensorReading)
+    private readonly sensorReadingRepo: Repository<SensorReading>,
+  ) {
+    this.intervalId = setInterval(() => this.flush(), this.FLUSH_INTERVAL_MS);
+  }
+
+  push(reading: SensorReading) {
+    // Chống tràn bộ nhớ nếu DB gặp sự cố kéo dài (Backpressure)
+    if (this.buffer.length >= this.MAX_BUFFER_CAPACITY) {
+      this.logger.warn(
+        `[SensorBuffer] Buffer đã đạt giới hạn tối đa (${this.MAX_BUFFER_CAPACITY}), loại bỏ bản ghi cũ nhất để bảo vệ hệ thống.`,
+      );
+      const dropped = this.buffer.shift();
+      if (dropped) {
+        this.bufferKeys.delete(
+          `${dropped.sensorId}:${dropped.sensorType}:${dropped.time.getTime()}`,
+        );
+      }
+    }
+
+    let timeMs = reading.time.getTime();
+    let key = `${reading.sensorId}:${reading.sensorType}:${timeMs}`;
+
+    // O(1) kiểm tra trùng timestamp khoá chính bằng Set
+    while (this.bufferKeys.has(key)) {
+      timeMs += 1;
+      reading.time = new Date(timeMs);
+      key = `${reading.sensorId}:${reading.sensorType}:${timeMs}`;
+    }
+
+    this.bufferKeys.add(key);
+    this.buffer.push(reading);
+
+    if (this.buffer.length >= this.FLUSH_SIZE && !this.isFlushing) {
+      this.flush();
+    }
+  }
+
+  async flush() {
+    if (this.isFlushing) return;
+    this.isFlushing = true;
+
+    try {
+      // 1. Thử ghi lại các batch retry trước đó nếu có
+      if (this.retryQueue.length > 0) {
+        const retryBatch = this.retryQueue.shift();
+        if (retryBatch && retryBatch.length > 0) {
+          await this.writeChunk(retryBatch, true);
+        }
+      }
+
+      if (this.buffer.length === 0) return;
+
+      // 2. Lấy toàn bộ bản ghi hiện có trong buffer
+      const batch = this.buffer.splice(0, this.buffer.length);
+      this.bufferKeys.clear();
+
+      // 3. Chia nhỏ batch nếu quá lớn để tối ưu hóa SQL execution plan
+      for (let i = 0; i < batch.length; i += this.CHUNK_SIZE) {
+        const chunk = batch.slice(i, i + this.CHUNK_SIZE);
+        await this.writeChunk(chunk, false);
+      }
+    } finally {
+      this.isFlushing = false;
+    }
+  }
+
+  private async writeChunk(chunk: SensorReading[], isRetry: boolean) {
+    try {
+      await this.sensorReadingRepo.insert(chunk);
+      this.logger.log(
+        `[SensorBuffer] Đã lưu ${chunk.length} bản ghi cảm biến vào database${isRetry ? ' (Retry)' : ''}.`,
+      );
+    } catch (error: any) {
+      // Nếu bị trùng khoá chính ("time", "sensorId", "sensorType") trong cùng millisecond
+      if (error?.code === '23505') {
+        let insertedCount = 0;
+        for (const item of chunk) {
+          try {
+            await this.sensorReadingRepo.insert(item);
+            insertedCount++;
+          } catch {
+            // Bỏ qua bản ghi trùng
+          }
+        }
+        this.logger.log(
+          `[SensorBuffer] Đã lưu ${insertedCount}/${chunk.length} bản ghi (đã lọc bản ghi trùng khoá).`,
+        );
+      } else {
+        this.logger.error(
+          `[SensorBuffer] Lỗi khi ghi hàng loạt vào database: ${error.message || error}`,
+        );
+        // Lưu vào hàng đợi retry nếu chưa retry
+        if (!isRetry && this.retryQueue.length < 20) {
+          this.retryQueue.push(chunk);
+        }
+      }
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+    }
+    // Ghi nốt dữ liệu còn sót lại khi tắt ứng dụng
+    await this.flush();
+  }
+}
+</file>
+
 <file path="src/sensor/vibration-window.service.ts">
 import { Injectable } from '@nestjs/common';
 
@@ -4248,6 +4068,83 @@ export class Dam {
 }
 </file>
 
+<file path="src/dam/entities/station.entity.ts">
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import { Dam } from './dam.entity';
+import { Gateway } from '../../gateway/entities/gateway.entity';
+
+@Entity('stations')
+export class Station {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  // Station code used in child device IDs (e.g. 'ST01' → GTW-ST01-TX2A, NOD-ST01-ESP01)
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  stationCode: string;
+
+  @Column({ type: 'varchar', length: 200 })
+  name: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  location: string;
+
+  @Column({ type: 'double precision', nullable: true })
+  latitude: number;
+
+  @Column({ type: 'double precision', nullable: true })
+  longitude: number;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  river: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  km: string;
+
+  @Column({ type: 'varchar', length: 16, default: 'safe' })
+  status: string;
+
+  @Column({ type: 'float', default: 0 })
+  waterLevel: number;
+
+  @Column({ type: 'float', default: 0 })
+  change: number;
+
+  @Column({ type: 'float', default: 0 })
+  pressure: number;
+
+  @Column({ type: 'float', default: 0 })
+  flow: number;
+
+  @Column({ type: 'float', default: 0 })
+  humidity: number;
+
+  @Column({ type: 'float', default: 0 })
+  bd1: number;
+
+  @Column({ type: 'float', default: 0 })
+  bd2: number;
+
+  @Column({ type: 'float', default: 0 })
+  bd3: number;
+
+  @Column({ type: 'varchar', length: 64 })
+  damId: string;
+
+  @ManyToOne(() => Dam, dam => dam.stations, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'damId' })
+  dam: Dam;
+
+  @OneToMany(() => Gateway, gateway => gateway.station, { cascade: true })
+  gateways: Gateway[];
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}
+</file>
+
 <file path="src/dam/dam.dto.ts">
 export class CreateDamDto {
   id?: string;
@@ -4310,6 +4207,73 @@ export class UpdateStationDto {
   bd2?: number;
   bd3?: number;
   damId?: string;
+}
+</file>
+
+<file path="src/sensor/entities/alarm-event.entity.ts">
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn } from 'typeorm';
+
+@Entity('alarm_events')
+export class AlarmEvent {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true, unique: true })
+  eventId?: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  damId: string;
+
+  @Column({ type: 'varchar', length: 64 })
+  sensorId: string;
+
+  @Column({ type: 'varchar', length: 32 })
+  sensorType: string;
+
+  @Column({ type: 'varchar', length: 16 })
+  severity: string; // 'WARNING' | 'ALERT' | 'CRITICAL'
+
+  @Column({ type: 'float' })
+  thresholdVal: number;
+
+  @Column({ type: 'float' })
+  measuredVal: number;
+
+  @Column({ type: 'integer', nullable: true })
+  durationS: number; // số giây vượt ngưỡng liên tiếp
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  triggeredAt: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  resolvedAt: Date;
+
+  @Column({ type: 'boolean', default: false })
+  cameraActivated: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  imageUrl: string; // URL MinIO
+
+  @Column({ type: 'integer', nullable: true })
+  stationId: number;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  stationName: string;
+
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  damName: string;
+
+  @Column({ type: 'varchar', length: 250, nullable: true })
+  location: string;
+
+  @Column({ type: 'boolean', nullable: true })
+  crackDetected: boolean;
+
+  @Column({ type: 'float', nullable: true })
+  crackConfidence: number;
+
+  @Column({ type: 'text', nullable: true })
+  notes: string;
 }
 </file>
 
@@ -4708,95 +4672,6 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
 }
 </file>
 
-<file path="src/sensor/sensor.module.ts">
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { SensorService } from './sensor.service';
-import { SensorController } from './sensor.controller';
-import { SensorGateway } from '../gateway/sensor.gateway';
-import { SensorReading } from './entities/sensor-reading.entity';
-import { ThresholdConfig } from './entities/threshold-config.entity';
-import { AlarmEvent } from './entities/alarm-event.entity';
-import { Station } from '../dam/entities/station.entity';
-import { Dam } from '../dam/entities/dam.entity';
-import { SensorBufferService } from './sensor-buffer.service';
-import { VibrationWindowService } from './vibration-window.service';
-import { DownsamplerService } from './downsampler.service';
-import { Gateway } from '../gateway/entities/gateway.entity';
-import { Node } from '../node/entities/node.entity';
-
-@Module({
-  imports: [
-    TypeOrmModule.forFeature([
-      SensorReading,
-      ThresholdConfig,
-      AlarmEvent,
-      Station,
-      Dam,
-      Gateway,
-      Node,
-    ]),
-  ],
-  controllers: [SensorController],
-  providers: [
-    SensorService,
-    SensorGateway,
-    SensorBufferService,
-    VibrationWindowService,
-    DownsamplerService,
-  ],
-  exports: [SensorService, SensorGateway],
-})
-export class SensorModule { }
-</file>
-
-<file path="src/app.module.ts">
-import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { ScheduleModule } from '@nestjs/schedule';
-import { SensorModule } from './sensor/sensor.module';
-import { DamModule } from './dam/dam.module';
-import { AuthModule } from './auth/auth.module';
-import { AuditLogModule } from './audit-log/audit-log.module';
-import { GatewayModule } from './gateway/gateway.module';
-import { NodeModule } from './node/node.module';
-import { CameraModule } from './camera/camera.module';
-import { EvidenceModule } from './evidence/evidence.module';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-    }),
-    ScheduleModule.forRoot(),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DB_HOST', 'localhost'),
-        port: config.get<number>('DB_PORT', 5432),
-        username: config.get<string>('DB_USERNAME', 'postgres'),
-        password: config.get<string>('DB_PASSWORD', 'postgres'),
-        database: config.get<string>('DB_NAME', 'dam_monitoring'),
-        autoLoadEntities: true,
-        synchronize: true, // Auto-create tables in development, but not recommended for production
-      }),
-    }),
-    SensorModule,
-    DamModule,
-    AuthModule,
-    AuditLogModule,
-    GatewayModule,
-    NodeModule,
-    CameraModule,
-    EvidenceModule,
-  ],
-})
-export class AppModule {}
-</file>
-
 <file path="docker-compose.yml">
 version: '3.8'
 
@@ -4916,105 +4791,6 @@ services:
 volumes:
   timescaledb_data:
   minio_data:
-</file>
-
-<file path="package.json">
-{
-  "name": "dam_monitoring_system_backend",
-  "version": "0.0.1",
-  "description": "",
-  "author": "",
-  "private": true,
-  "license": "UNLICENSED",
-  "scripts": {
-    "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
-  },
-  "dependencies": {
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/config": "^4.0.4",
-    "@nestjs/core": "^11.0.1",
-    "@nestjs/jwt": "^11.0.2",
-    "@nestjs/mapped-types": "*",
-    "@nestjs/microservices": "^11.1.28",
-    "@nestjs/passport": "^11.0.5",
-    "@nestjs/platform-express": "^11.0.1",
-    "@nestjs/platform-socket.io": "^11.1.19",
-    "@nestjs/schedule": "^6.1.3",
-    "@nestjs/typeorm": "^11.0.1",
-    "@nestjs/websockets": "^11.1.19",
-    "@types/cron": "^2.0.1",
-    "@types/minio": "^7.1.0",
-    "@types/nodemailer": "^8.0.1",
-    "bcrypt": "^6.0.0",
-    "cookie-parser": "^1.4.7",
-    "minio": "^8.0.7",
-    "mqtt": "^5.15.2",
-    "nodemailer": "^9.0.5",
-    "passport": "^0.7.0",
-    "passport-jwt": "^4.0.1",
-    "pg": "^8.21.0",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
-    "socket.io": "^4.8.3",
-    "typeorm": "^1.0.0"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3.2.0",
-    "@eslint/js": "^9.18.0",
-    "@nestjs/cli": "^11.0.0",
-    "@nestjs/schematics": "^11.0.0",
-    "@nestjs/testing": "^11.0.1",
-    "@types/bcrypt": "^6.0.0",
-    "@types/cookie-parser": "^1.4.10",
-    "@types/express": "^5.0.0",
-    "@types/jest": "^30.0.0",
-    "@types/node": "^24.0.0",
-    "@types/passport-jwt": "^4.0.1",
-    "@types/supertest": "^7.0.0",
-    "eslint": "^9.18.0",
-    "eslint-config-prettier": "^10.0.1",
-    "eslint-plugin-prettier": "^5.2.2",
-    "globals": "^17.0.0",
-    "jest": "^30.0.0",
-    "prettier": "^3.4.2",
-    "source-map-support": "^0.5.21",
-    "supertest": "^7.0.0",
-    "ts-jest": "^29.2.5",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.20.0"
-  },
-  "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
-  }
-}
 </file>
 
 <file path="README.md">
@@ -5202,6 +4978,194 @@ npm run start:dev
    - Cập nhật snapshot dữ liệu vào bộ nhớ đệm `latestByCluster` và `latestByStation`.
    - Lưu trữ chuỗi thời gian vào TimescaleDB.
    - Phát sự kiện WebSocket `sensor_update` tới các client Next.js đang mở Dashboard.
+</file>
+
+<file path="src/sensor/sensor.module.ts">
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { SensorService } from './sensor.service';
+import { SensorController } from './sensor.controller';
+import { SensorGateway } from '../gateway/sensor.gateway';
+import { SensorReading } from './entities/sensor-reading.entity';
+import { ThresholdConfig } from './entities/threshold-config.entity';
+import { AlarmEvent } from './entities/alarm-event.entity';
+import { Station } from '../dam/entities/station.entity';
+import { Dam } from '../dam/entities/dam.entity';
+import { SensorBufferService } from './sensor-buffer.service';
+import { DownsamplerService } from './downsampler.service';
+import { Gateway } from '../gateway/entities/gateway.entity';
+import { Node } from '../node/entities/node.entity';
+import { Evidence } from '../evidence/entities/evidence.entity';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([
+      SensorReading,
+      ThresholdConfig,
+      AlarmEvent,
+      Station,
+      Dam,
+      Gateway,
+      Node,
+      Evidence,
+    ]),
+  ],
+  controllers: [SensorController],
+  providers: [
+    SensorService,
+    SensorGateway,
+    SensorBufferService,
+    DownsamplerService,
+  ],
+  exports: [SensorService, SensorGateway],
+})
+export class SensorModule { }
+</file>
+
+<file path="src/app.module.ts">
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
+import { SensorModule } from './sensor/sensor.module';
+import { DamModule } from './dam/dam.module';
+import { AuthModule } from './auth/auth.module';
+import { AuditLogModule } from './audit-log/audit-log.module';
+import { GatewayModule } from './gateway/gateway.module';
+import { NodeModule } from './node/node.module';
+import { CameraModule } from './camera/camera.module';
+import { EvidenceModule } from './evidence/evidence.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+    }),
+    ScheduleModule.forRoot(),
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres',
+        host: config.get<string>('DB_HOST', 'localhost'),
+        port: config.get<number>('DB_PORT', 5432),
+        username: config.get<string>('DB_USERNAME', 'postgres'),
+        password: config.get<string>('DB_PASSWORD', 'postgres'),
+        database: config.get<string>('DB_NAME', 'dam_monitoring'),
+        autoLoadEntities: true,
+        synchronize: true, // Auto-create tables in development, but not recommended for production
+      }),
+    }),
+    SensorModule,
+    DamModule,
+    AuthModule,
+    AuditLogModule,
+    GatewayModule,
+    NodeModule,
+    CameraModule,
+    EvidenceModule,
+  ],
+})
+export class AppModule {}
+</file>
+
+<file path="package.json">
+{
+  "name": "dam_monitoring_system_backend",
+  "version": "0.0.1",
+  "description": "",
+  "author": "",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/mapped-types": "*",
+    "@nestjs/microservices": "^11.1.28",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-socket.io": "^11.1.19",
+    "@nestjs/schedule": "^6.1.3",
+    "@nestjs/typeorm": "^11.0.1",
+    "@nestjs/websockets": "^11.1.19",
+    "@types/cron": "^2.0.1",
+    "@types/minio": "^7.1.0",
+    "@types/nodemailer": "^8.0.1",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "minio": "^8.0.7",
+    "mqtt": "^5.15.2",
+    "nodemailer": "^9.0.5",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "pg": "^8.21.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "socket.io": "^4.8.3",
+    "typeorm": "^1.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.2.0",
+    "@eslint/js": "^9.18.0",
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@nestjs/testing": "^11.0.1",
+    "@types/bcrypt": "^6.0.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^7.0.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.2.2",
+    "globals": "^17.0.0",
+    "jest": "^30.0.0",
+    "prettier": "^3.4.2",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}
 </file>
 
 <file path="src/main.ts">
@@ -5637,6 +5601,7 @@ import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
 import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
+import { Evidence } from '../evidence/entities/evidence.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
@@ -5687,6 +5652,8 @@ export class SensorService implements OnModuleInit {
     private readonly gatewayRepo: Repository<Gateway>,
     @InjectRepository(Node)
     private readonly nodeRepo: Repository<Node>,
+    @InjectRepository(Evidence)
+    private readonly evidenceRepo: Repository<Evidence>,
     private readonly bufferService: SensorBufferService,
     private readonly configService: ConfigService,
     private readonly auditLogService: AuditLogService,
@@ -5859,9 +5826,6 @@ export class SensorService implements OnModuleInit {
     }
 
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
-    const vibConfig = configs.find(c => c.sensorType === 'vibration');
-    const humConfig = configs.find(c => c.sensorType === 'humidity');
-
     const tankHeight = waterConfig ? waterConfig.tankHeight : 50.0;
     const calculatedPercent = +((dto.waterLevel / tankHeight) * 100).toFixed(1);
 
@@ -5896,46 +5860,9 @@ export class SensorService implements OnModuleInit {
 
     readingsToInsert.forEach(reading => this.bufferService.push(reading));
 
-    // 3. Đánh giá ngưỡng cảnh báo & Tạo AlarmEvent — thu thập để broadcast
-    const newAlarms: AlarmEvent[] = [];
-
-    // Ghi chú: Logic kiểm tra vượt ngưỡng độ rung và tự động tạo AlarmEvent từ telemetry đã được LOẠI BỎ ở Backend.
-    // Việc kiểm tra vượt ngưỡng độ rung, chụp ảnh AI và phát sự kiện cảnh báo độ rung hoàn toàn do Jetson TX2 (main.py) tại hiện trường đảm nhiệm.
-    // Backend chỉ đóng vai trò tiếp nhận sự kiện Anomaly từ Jetson qua MQTT (handleAnomalyEvent) và nhận ảnh bằng chứng qua POST /evidence/upload.
-
-    if (waterConfig && dto.waterLevel >= waterConfig.alertHigh) {
-      const severity = dto.waterLevel >= waterConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      const alarm = await this.createAlarmEvent(
-        damId,
-        sensorId,
-        'water_level',
-        severity,
-        waterConfig.alertHigh,
-        dto.waterLevel,
-        0,
-        `Mực nước vượt ngưỡng báo động: ${dto.waterLevel} cm`,
-        stationId
-      );
-      if (alarm) newAlarms.push(alarm);
-    }
-
-    if (humConfig && dto.moisture >= humConfig.alertHigh) {
-      const severity = dto.moisture >= humConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
-      const alarm = await this.createAlarmEvent(
-        damId,
-        sensorId,
-        'humidity',
-        severity,
-        humConfig.alertHigh,
-        dto.moisture,
-        0,
-        `Độ ẩm rò rỉ vượt ngưỡng: ${dto.moisture}%`,
-        stationId
-      );
-      if (alarm) newAlarms.push(alarm);
-    }
-
-    return { snapshot, alarms: newAlarms };
+    // Backend TUYỆT ĐỐI không tự tạo AlarmEvent từ telemetry.
+    // Tất cả AlarmEvent trong toàn bộ hệ thống đều do Jetson TX2 phân tích và phát qua MQTT (handleAnomalyEvent).
+    return { snapshot, alarms: [] };
   }
 
   /**
@@ -6115,7 +6042,13 @@ export class SensorService implements OnModuleInit {
       qb.andWhere('a.resolvedAt IS NULL');
     }
 
-    return qb.getMany();
+    const alarms = await qb.getMany();
+    for (const a of alarms) {
+      if (!a.measuredVal || Number(a.measuredVal) === 0) {
+        a.measuredVal = a.thresholdVal && Number(a.thresholdVal) > 0 ? Number(a.thresholdVal) : 15.0;
+      }
+    }
+    return alarms;
   }
 
   async resolveAlarmEvent(id: string): Promise<AlarmEvent> {
@@ -6153,76 +6086,6 @@ export class SensorService implements OnModuleInit {
     return r;
   }
 
-  // Trả về AlarmEvent nếu tạo thành công, null nếu bị de-dupe
-  async createAlarmEvent(
-    damId: string,
-    sensorId: string,
-    sensorType: string,
-    severity: string,
-    thresholdVal: number,
-    measuredVal: number,
-    durationS: number,
-    notes: string,
-    stationId?: number,
-  ): Promise<AlarmEvent | null> {
-    // Để tránh spam nhiều sự kiện cảnh báo trùng lặp liên tục trong thời gian ngắn,
-    // ta chỉ tạo cảnh báo mới nếu sự kiện trước đó cách đây quá 1 phút hoặc đã được resolved.
-    const lastEvent = await this.alarmEventRepo.findOne({
-      where: { damId, sensorId, sensorType, severity },
-      order: { triggeredAt: 'DESC' },
-    });
-
-    const DE_DUPE_INTERVAL = 5 * 1000; // Đặt 5 giây để dễ test trong quá trình phát triển (mặc định là 60 giây)
-    if (lastEvent && (new Date().getTime() - lastEvent.triggeredAt.getTime() < DE_DUPE_INTERVAL) && !lastEvent.resolvedAt) {
-      // Bỏ qua không tạo thêm event để tránh spam
-      return null;
-    }
-
-    const event = new AlarmEvent();
-    event.damId = damId;
-    event.sensorId = sensorId;
-    event.sensorType = sensorType;
-    event.severity = severity;
-    event.thresholdVal = thresholdVal;
-    event.measuredVal = measuredVal;
-    event.durationS = durationS;
-    event.notes = notes;
-    if (stationId) event.stationId = stationId;
-
-    // Tra cứu và điền chính xác Tên Trạm, Tên Đập và Vị trí thực tế
-    try {
-      let station: Station | null = null;
-      if (stationId) {
-        station = await this.stationRepo.findOne({ where: { id: stationId }, relations: { dam: true } });
-      }
-      let dam: Dam | null = null;
-      const targetDamId = damId || station?.damId;
-      if (targetDamId) {
-        dam = await this.damRepo.findOne({ where: { id: targetDamId } });
-      }
-
-      event.stationName = station?.name || (stationId ? `Trạm ${stationId}` : '');
-      event.damName = dam?.name || station?.dam?.name || (damId ? `Đập ${damId}` : '');
-      event.location = station?.location || station?.km || dam?.location || 'Vị trí công trình đập';
-    } catch (err: any) {
-      console.log('[SensorService] Lỗi tra cứu thông tin Trạm/Đập:', err.message);
-    }
-
-    // Chỉ kích hoạt cờ Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
-    if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
-      event.cameraActivated = true;
-    }
-
-    await this.alarmEventRepo.save(event);
-    console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} tại [${event.stationName || stationId || 'Trạm Quan Trắc'}] - Đập [${event.damName || damId}]`);
-
-    // Ghi chú: Không tự động gửi HTTP POST triggerAiCamera() ở đây để tránh kích hoạt kép (double trigger)
-    // Jetson TX2 Edge Gateway đã tự động kiểm tra độ rung tại chỗ, tự chụp ảnh & chạy YOLO AI,
-    // sau đó gửi kết quả qua MQTT events/gateway/.../anomaly và POST /evidence/upload.
-
-    return event;
-  }
-
   /**
    * Handle anomaly events published by Jetson TX2 via Cloud MQTT
    * Topic: events/gateway/{gateway_id}/anomaly
@@ -6244,29 +6107,33 @@ export class SensorService implements OnModuleInit {
   }): Promise<AlarmEvent> {
     const eventId = payload.event_id || payload.eventId;
     const isCrack = payload.crack_detected ?? false;
-    const measuredVal = payload.measured_val ?? payload.measuredVal ?? (payload.crack_size && payload.crack_size > 0 ? payload.crack_size : 0);
     const severity = isCrack
       ? 'CRITICAL'
       : (payload.severity || 'ALERT');
 
-    console.log(
-      `[SensorService] Nhận sự kiện Anomaly từ Gateway ${payload.gateway_id} / Node ${payload.node_id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${measuredVal} mm/s, Severity: ${severity}, Crack: ${isCrack})`,
-    );
-
-    // 1. Resolve target damId from node or gateway relations
+    // 1. Resolve target damId, stationId, names, and threshold from relations
     let targetDamId = DEFAULT_DAM_ID;
     let targetThreshold = 15.0;
+    let targetStationId: number | undefined;
+    let targetStationName = '';
+    let targetDamName = '';
+    let targetLocation = '';
+
     if (payload.node_id) {
       try {
         const node = await this.nodeRepo.findOne({
           where: { id: payload.node_id },
-          relations: { gateway: { station: true } },
+          relations: { gateway: { station: { dam: true } } },
         });
-        if (node?.gateway?.station?.damId) {
+        if (node?.gateway?.station) {
+          targetStationId = node.gateway.station.id;
+          targetStationName = node.gateway.station.name;
           targetDamId = node.gateway.station.damId;
+          targetDamName = node.gateway.station.dam?.name || `Đập ${targetDamId}`;
+          targetLocation = node.gateway.station.location || node.gateway.station.km || 'Vị trí công trình đập';
         }
         if (node?.vibrationThreshold != null) {
-          targetThreshold = node.vibrationThreshold;
+          targetThreshold = Number(node.vibrationThreshold);
         }
       } catch (err: any) {
         console.warn('[SensorService] Lỗi tra cứu damId theo node:', err.message);
@@ -6275,32 +6142,66 @@ export class SensorService implements OnModuleInit {
       try {
         const gw = await this.gatewayRepo.findOne({
           where: { id: payload.gateway_id },
-          relations: { station: true },
+          relations: { station: { dam: true } },
         });
-        if (gw?.station?.damId) {
+        if (gw?.station) {
+          targetStationId = gw.station.id;
+          targetStationName = gw.station.name;
           targetDamId = gw.station.damId;
+          targetDamName = gw.station.dam?.name || `Đập ${targetDamId}`;
+          targetLocation = gw.station.location || gw.station.km || 'Vị trí công trình đập';
         }
       } catch (err: any) {
         console.warn('[SensorService] Lỗi tra cứu damId theo gateway:', err.message);
       }
     }
 
-    // 2. Tìm AlarmEvent theo eventId duy nhất của sự cố
+    // Resolve measuredVal with fallback to realtime node cache or threshold
+    let measuredVal = Number(
+      payload.measured_val ??
+      payload.measuredVal ??
+      (payload as any).value ??
+      (payload as any).amp ??
+      (payload as any).ppv ??
+      (payload as any).measuredValue ??
+      0,
+    );
+
+    if (isNaN(measuredVal) || measuredVal <= 0) {
+      const cached = this.nodeStateCache.get(payload.node_id) || this.latestByNode.get(payload.node_id);
+      if (cached && cached.amp > 0) {
+        measuredVal = cached.amp;
+      }
+    }
+    if (isNaN(measuredVal) || measuredVal <= 0) {
+      if (payload.crack_size && payload.crack_size > 0) {
+        measuredVal = Number(payload.crack_size);
+      } else {
+        measuredVal = targetThreshold > 0 ? targetThreshold : 15.0;
+      }
+    }
+
+    console.log(
+      `[SensorService] Nhận sự kiện Anomaly từ Gateway ${payload.gateway_id} / Node ${payload.node_id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${measuredVal} mm/s, Severity: ${severity}, Crack: ${isCrack})`,
+    );
+
+    // Kiểm tra xem ảnh evidence đã upload trước đó chưa
+    let uploadedImageUrl: string | undefined;
+    if (eventId) {
+      try {
+        const evidence = await this.evidenceRepo.findOne({ where: { eventId } });
+        if (evidence) {
+          uploadedImageUrl = evidence.imageUrl;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 2. Tìm AlarmEvent theo eventId duy nhất của sự cố (chỉ cập nhật nếu đã tồn tại đúng eventId này)
     let event: AlarmEvent | null = null;
     if (eventId) {
       event = await this.alarmEventRepo.findOne({ where: { eventId } });
-    }
-
-    if (!event) {
-      // Tìm AlarmEvent vừa mới được tạo trong 30s chưa có kết quả AI
-      const recentCutoff = new Date(Date.now() - 30 * 1000);
-      event = await this.alarmEventRepo.findOne({
-        where: {
-          sensorId: payload.node_id,
-          triggeredAt: MoreThan(recentCutoff),
-        },
-        order: { triggeredAt: 'DESC' },
-      });
     }
 
     if (event) {
@@ -6310,7 +6211,16 @@ export class SensorService implements OnModuleInit {
       event.crackConfidence = payload.confidence;
       if (measuredVal > 0) {
         event.measuredVal = measuredVal;
+      } else if (!event.measuredVal || Number(event.measuredVal) === 0) {
+        event.measuredVal = targetThreshold;
       }
+      if (uploadedImageUrl && !event.imageUrl) {
+        event.imageUrl = uploadedImageUrl;
+      }
+      if (targetStationId && !event.stationId) event.stationId = targetStationId;
+      if (targetStationName && !event.stationName) event.stationName = targetStationName;
+      if (targetDamName && !event.damName) event.damName = targetDamName;
+      if (targetLocation && !event.location) event.location = targetLocation;
       event.severity = severity;
       event.notes = isCrack
         ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
@@ -6329,6 +6239,11 @@ export class SensorService implements OnModuleInit {
       event.crackDetected = isCrack;
       event.crackConfidence = payload.confidence;
       event.cameraActivated = true;
+      if (uploadedImageUrl) event.imageUrl = uploadedImageUrl;
+      if (targetStationId) event.stationId = targetStationId;
+      if (targetStationName) event.stationName = targetStationName;
+      if (targetDamName) event.damName = targetDamName;
+      if (targetLocation) event.location = targetLocation;
       event.notes = isCrack
         ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
         : `Camera AI trên Jetson TX2 (${payload.gateway_id}) đã kiểm tra - Không phát hiện vết nứt. Confidence: ${(payload.confidence * 100).toFixed(1)}%`;
@@ -6336,45 +6251,6 @@ export class SensorService implements OnModuleInit {
 
     await this.alarmEventRepo.save(event);
     return event;
-  }
-
-  async triggerAiCamera(alarm: AlarmEvent) {
-    let jetsonUrl = this.configService.get<string>('JETSON_TX2_URL', 'http://localhost:8080');
-
-    if (alarm.damId) {
-      try {
-        const dam = await this.damRepo.findOne({ where: { id: alarm.damId } });
-        if (dam?.cameraUrl) {
-          jetsonUrl = dam.cameraUrl;
-        }
-      } catch (err) {
-        console.log('[SensorService] Lỗi tìm cameraUrl của đập:', err.message);
-      }
-    }
-
-    const cameraUrl = `${jetsonUrl}/camera/trigger-inference`;
-
-    console.log(`[SensorService] Đang gửi lệnh kích hoạt Camera AI tới [${alarm.damId || 'N/A'}]: ${cameraUrl} cho sự kiện cảnh báo ${alarm.id}`);
-
-    fetch(cameraUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        alarmId: alarm.id,
-        damId: alarm.damId,
-        damName: alarm.damName,
-        stationId: alarm.stationId,
-        stationName: alarm.stationName,
-        location: alarm.location,
-        sensorId: alarm.sensorId,
-        sensorType: alarm.sensorType,
-        measuredValue: alarm.measuredVal,
-        severity: alarm.severity,
-        timestamp: alarm.triggeredAt,
-      }),
-    }).catch(err => {
-      console.log('[SensorService] Lỗi kích hoạt Camera AI:', err.message);
-    });
   }
 
   private pushHistory(s: SensorSnapshot) {

@@ -16,7 +16,7 @@ import { SensorService } from './sensor.service';
 import { SensorDataDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
 import { AlarmEvent } from './entities/alarm-event.entity';
-import { MessagePattern, Payload } from '@nestjs/microservices';
+import { MessagePattern, Payload, Ctx, MqttContext } from '@nestjs/microservices';
 
 
 import { UseGuards } from '@nestjs/common';
@@ -144,6 +144,89 @@ export class SensorController {
     return { ok: true };
   }
 
+  /**
+   * Topic: telemetry/gateway/{gateway_id}/node/{node_id}/{sensor_type}
+   * Ví dụ:
+   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/vibration
+   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/water_level
+   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/moisture
+   */
+  @MessagePattern('telemetry/gateway/+/node/+/+')
+  async ingestTelemetryPerSensorMqtt(
+    @Payload() payload: any,
+    @Ctx() context: MqttContext,
+  ) {
+    try {
+      const topic = context.getTopic();
+      const parts = topic.split('/');
+      const gatewayId = parts[2] || '';
+      const nodeId = parts[4] || '';
+      const sensorType = parts[5] || '';
+
+      console.log(
+        `[MQTT Telemetry] Nhận [${sensorType}] từ Gateway: ${gatewayId}, Node: ${nodeId}`,
+        payload,
+      );
+
+      const { snapshot, alarms } = await this.sensorService.ingestSingleTelemetry(
+        gatewayId,
+        nodeId,
+        sensorType,
+        payload,
+      );
+
+      this.gateway.broadcastUpdate(snapshot);
+
+      for (const alarm of alarms) {
+        this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
+      }
+
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT Telemetry] Lỗi xử lý dữ liệu telemetry:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
+  /**
+   * Topic: telemetry/gateway/{gateway_id}/node/{node_id} (Full node payload)
+   */
+  @MessagePattern('telemetry/gateway/+/node/+')
+  async ingestTelemetryNodeMqtt(
+    @Payload() payload: any,
+    @Ctx() context: MqttContext,
+  ) {
+    try {
+      const topic = context.getTopic();
+      const parts = topic.split('/');
+      const gatewayId = parts[2] || '';
+      const nodeId = parts[4] || '';
+
+      console.log(
+        `[MQTT Telemetry Node] Nhận dữ liệu từ Gateway: ${gatewayId}, Node: ${nodeId}`,
+        payload,
+      );
+
+      const { snapshot, alarms } = await this.sensorService.ingestSingleTelemetry(
+        gatewayId,
+        nodeId,
+        'all',
+        payload,
+      );
+
+      this.gateway.broadcastUpdate(snapshot);
+
+      for (const alarm of alarms) {
+        this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
+      }
+
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT Telemetry Node] Lỗi xử lý dữ liệu:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
   @MessagePattern('dam/sensor/all')
   async ingestMqtt(@Payload() dto: SensorDataDto) {
     if (
@@ -167,6 +250,18 @@ export class SensorController {
       return { ok: true };
     } catch (error: any) {
       console.error('[MQTT] Lỗi ingest data:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
+  @MessagePattern('events/gateway/+/anomaly')
+  async ingestAnomalyMqtt(@Payload() payload: any) {
+    try {
+      const alarm = await this.sensorService.handleAnomalyEvent(payload);
+      this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT Anomaly] Lỗi xử lý sự kiện anomaly:', error.message);
       return { ok: false, error: error.message };
     }
   }

@@ -1,16 +1,16 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { SensorDataDto, SensorHistory, SensorSnapshot } from './sensor.dto';
 import { SensorReading } from './entities/sensor-reading.entity';
 import { ThresholdConfig } from './entities/threshold-config.entity';
 import { AlarmEvent } from './entities/alarm-event.entity';
 import { SensorBufferService } from './sensor-buffer.service';
-import { VibrationWindowService } from './vibration-window.service';
 import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
-import { SensorClusterService } from './sensor-cluster.service';
+import { Gateway } from '../gateway/entities/gateway.entity';
+import { Node } from '../node/entities/node.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
@@ -21,7 +21,19 @@ const DEFAULT_DAM_ID = 'dam_1';
 export class SensorService implements OnModuleInit {
   private latest: SensorSnapshot | null = null;
   private latestByStation: Map<number, SensorSnapshot> = new Map();
-  private latestByCluster: Map<string, SensorSnapshot> = new Map();
+  private latestByNode: Map<string, SensorSnapshot> = new Map();
+
+  private thresholdConfigCache: Map<string, ThresholdConfig[]> = new Map();
+  private stationDeviceCache: Map<string, { stationId: number; damId: string }> = new Map();
+
+  private nodeStateCache: Map<string, {
+    freq: number;
+    amp: number;
+    waterLevel: number;
+    moisture: number;
+    stationId?: number;
+    damId?: string;
+  }> = new Map();
 
   private history: SensorHistory = {
     timestamps: [],
@@ -45,14 +57,16 @@ export class SensorService implements OnModuleInit {
     private readonly stationRepo: Repository<Station>,
     @InjectRepository(Dam)
     private readonly damRepo: Repository<Dam>,
+    @InjectRepository(Gateway)
+    private readonly gatewayRepo: Repository<Gateway>,
+    @InjectRepository(Node)
+    private readonly nodeRepo: Repository<Node>,
     private readonly bufferService: SensorBufferService,
-    private readonly vibrationWindowService: VibrationWindowService,
     private readonly configService: ConfigService,
-    private readonly sensorClusterService: SensorClusterService,
     private readonly auditLogService: AuditLogService,
   ) { }
 
-  // Khởi tạo ngưỡng mặc định khi khởi động ứng dụng nếu chưa tồn tại
+  // Khởi tạo ngưỡng mặc định & nạp cache khi khởi động ứng dụng
   async onModuleInit() {
     console.log('[SensorService] Đang kiểm tra cấu hình ngưỡng mặc định...');
     const types = ['vibration', 'water_level', 'humidity'];
@@ -93,6 +107,94 @@ export class SensorService implements OnModuleInit {
         console.log(`[SensorService] Đã tạo cấu hình ngưỡng mặc định cho cảm biến: ${type}`);
       }
     }
+
+    // Warm-up cache bộ nhớ cho ThresholdConfigs và Mappings
+    await this.preloadCache();
+  }
+
+  private async preloadCache() {
+    try {
+      const configs = await this.thresholdConfigRepo.find();
+      const grouped = new Map<string, ThresholdConfig[]>();
+      for (const c of configs) {
+        const list = grouped.get(c.damId) || [];
+        list.push(c);
+        grouped.set(c.damId, list);
+      }
+      this.thresholdConfigCache = grouped;
+
+      const gateways = await this.gatewayRepo.find({ relations: { station: true } });
+      for (const gw of gateways) {
+        if (gw.stationId) {
+          this.stationDeviceCache.set(gw.id, {
+            stationId: gw.stationId,
+            damId: gw.station?.damId || DEFAULT_DAM_ID,
+          });
+        }
+      }
+
+      const nodes = await this.nodeRepo.find({ relations: { gateway: { station: true } } });
+      for (const node of nodes) {
+        if (node.gateway && node.gateway.stationId) {
+          this.stationDeviceCache.set(node.id, {
+            stationId: node.gateway.stationId,
+            damId: node.gateway.station?.damId || DEFAULT_DAM_ID,
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn('[SensorService] Lỗi khi nạp cache:', err.message);
+    }
+  }
+
+  /**
+   * Cập nhật ngay lập tức liên kết Node -> Station/Dam trong memory cache.
+   * Chuyển hướng tức thì toàn bộ luồng data cảm biến của Node sang Station mới.
+   */
+  updateNodeStationMapping(nodeId: string, stationId: number, damId?: string) {
+    const targetDamId = damId || DEFAULT_DAM_ID;
+    this.stationDeviceCache.set(nodeId, {
+      stationId,
+      damId: targetDamId,
+    });
+
+    const state = this.nodeStateCache.get(nodeId);
+    if (state) {
+      state.stationId = stationId;
+      state.damId = targetDamId;
+    }
+
+    console.log(
+      `[SensorService] Đã chuyển luồng dữ liệu của Node ${nodeId} sang Trạm (Station ${stationId}) - Đập (${targetDamId})`,
+    );
+  }
+
+  async getNodeStationInfo(nodeId: string, gatewayId?: string): Promise<{ stationId: number; damId: string }> {
+    let cached = this.stationDeviceCache.get(nodeId);
+    if (cached) return cached;
+    if (gatewayId) {
+      cached = this.stationDeviceCache.get(gatewayId);
+      if (cached) return cached;
+    }
+
+    try {
+      const node = await this.nodeRepo.findOne({
+        where: { id: nodeId },
+        relations: { gateway: { station: true } },
+      });
+      if (node?.gateway?.stationId) {
+        const info = {
+          stationId: node.gateway.stationId,
+          damId: node.gateway.station?.damId || DEFAULT_DAM_ID,
+        };
+        this.stationDeviceCache.set(nodeId, info);
+        return info;
+      }
+    } catch {
+      // ignore
+    }
+
+    return { stationId: 1, damId: DEFAULT_DAM_ID };
   }
 
   async ingest(dto: SensorDataDto): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
@@ -101,31 +203,35 @@ export class SensorService implements OnModuleInit {
     const sensorId = dto.clusterId || 'sensor_node_1';
     let stationId: number | undefined = dto.stationId;
 
-    // 1. Nếu có clusterId, tra cứu Cụm cảm biến để tìm Trạm (Station) và Đập (Dam) tương ứng
+    // 1. Nhanh 0ms tra cứu Trạm (Station) và Đập (Dam) từ Cache bộ nhớ
     if (dto.clusterId) {
-      await this.sensorClusterService.updateOnlineStatus(dto.clusterId, timestamp);
-      try {
-        const cluster = await this.sensorClusterService.findById(dto.clusterId);
-        if (cluster) {
-          stationId = cluster.stationId;
-          if (cluster.station && cluster.station.damId) {
-            damId = cluster.station.damId;
-          }
+      const cached = this.stationDeviceCache.get(dto.clusterId);
+      if (cached) {
+        stationId = cached.stationId;
+        damId = cached.damId;
+      }
 
-          // Cập nhật thông số thời gian thực vào bảng Trạm (Station)
-          await this.stationRepo.update(cluster.stationId, {
-            waterLevel: +dto.waterLevel,
-            humidity: +dto.moisture,
-            bd3: +dto.amp, // Lưu biên độ rung vào chỉ số bd3 của trạm
-          });
-        }
-      } catch (err) {
-        // Cụm chưa đăng ký trong DB — tiếp tục fallback mặc định
+      // Cập nhật online status & thông số Trạm bất đồng bộ (không block WebSocket)
+      this.nodeRepo.update(dto.clusterId, { status: 'online', lastSeenAt: timestamp }).catch(() => {});
+      if (stationId) {
+        this.stationRepo.update(stationId, {
+          waterLevel: +dto.waterLevel,
+          humidity: +dto.moisture,
+          bd3: +dto.amp,
+        }).catch(() => {});
       }
     }
 
-    // 2. Lấy cấu hình ngưỡng từ database để tính toán động
-    const configs = await this.thresholdConfigRepo.find({ where: { damId } });
+    // Fallback stationId nếu chưa có
+    if (!stationId) stationId = 1;
+
+    // 2. Lấy cấu hình ngưỡng từ memory cache (0ms)
+    let configs = this.thresholdConfigCache.get(damId);
+    if (!configs || configs.length === 0) {
+      configs = await this.thresholdConfigRepo.find({ where: { damId } });
+      this.thresholdConfigCache.set(damId, configs);
+    }
+
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
     const vibConfig = configs.find(c => c.sensorType === 'vibration');
     const humConfig = configs.find(c => c.sensorType === 'humidity');
@@ -150,7 +256,7 @@ export class SensorService implements OnModuleInit {
       this.latestByStation.set(stationId, snapshot);
     }
     if (dto.clusterId) {
-      this.latestByCluster.set(dto.clusterId, snapshot);
+      this.latestByNode.set(dto.clusterId, snapshot);
     }
     this.pushHistory(snapshot);
 
@@ -167,34 +273,9 @@ export class SensorService implements OnModuleInit {
     // 3. Đánh giá ngưỡng cảnh báo & Tạo AlarmEvent — thu thập để broadcast
     const newAlarms: AlarmEvent[] = [];
 
-    if (vibConfig) {
-      const vibResult = this.vibrationWindowService.evaluate(
-        sensorId,
-        dto.amp,
-        timestamp,
-        {
-          alertHigh: vibConfig.alertHigh,
-          criticalHigh: vibConfig.criticalHigh,
-          warnHigh: vibConfig.warnHigh,
-          alertMinCount: 4
-        }
-      );
-
-      if (vibResult.breach) {
-        const alarm = await this.createAlarmEvent(
-          damId,
-          sensorId,
-          'vibration',
-          vibResult.severity,
-          vibConfig.alertHigh,
-          dto.amp,
-          Math.round(vibResult.durationMs / 1000),
-          `Rung động vượt ngưỡng liên tiếp: ${dto.amp} mm/s`,
-          stationId
-        );
-        if (alarm) newAlarms.push(alarm);
-      }
-    }
+    // Ghi chú: Logic kiểm tra vượt ngưỡng độ rung và tự động tạo AlarmEvent từ telemetry đã được LOẠI BỎ ở Backend.
+    // Việc kiểm tra vượt ngưỡng độ rung, chụp ảnh AI và phát sự kiện cảnh báo độ rung hoàn toàn do Jetson TX2 (main.py) tại hiện trường đảm nhiệm.
+    // Backend chỉ đóng vai trò tiếp nhận sự kiện Anomaly từ Jetson qua MQTT (handleAnomalyEvent) và nhận ảnh bằng chứng qua POST /evidence/upload.
 
     if (waterConfig && dto.waterLevel >= waterConfig.alertHigh) {
       const severity = dto.waterLevel >= waterConfig.criticalHigh ? 'CRITICAL' : 'ALERT';
@@ -231,13 +312,114 @@ export class SensorService implements OnModuleInit {
     return { snapshot, alarms: newAlarms };
   }
 
+  /**
+   * Parse payload MQTT linh hoạt (Object, string JSON, number, raw text)
+   */
+  private parseTelemetryPayload(raw: any): any {
+    if (raw === null || raw === undefined) return {};
+    if (typeof raw === 'number') return { value: raw };
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        const num = parseFloat(trimmed);
+        if (!isNaN(num)) return { value: num };
+        return { raw: trimmed };
+      }
+    }
+    return raw;
+  }
+
+  /**
+   * Xử lý nhận dữ liệu cảm biến từng loại (vibration, water_level, moisture) từ topic:
+   * telemetry/gateway/{gateway_id}/node/{node_id}/{sensor_type}
+   */
+  async ingestSingleTelemetry(
+    gatewayId: string,
+    nodeId: string,
+    sensorType: string,
+    rawPayload: any,
+  ): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
+    const payload = this.parseTelemetryPayload(rawPayload);
+    const key = nodeId || gatewayId || 'default';
+
+    // 1. Lấy hoặc tạo cache lưu trạng thái gần nhất của Node/Gateway này
+    let state = this.nodeStateCache.get(key);
+    if (!state) {
+      state = {
+        freq: this.latest?.freq || 0,
+        amp: this.latest?.amp || 0,
+        waterLevel: this.latest?.waterLevel || 0,
+        moisture: this.latest?.moisture || 0,
+        damId: DEFAULT_DAM_ID,
+      };
+      this.nodeStateCache.set(key, state);
+    }
+
+    const typeLower = (sensorType || '').toLowerCase();
+
+    // 2. Parse thông số cảm biến tương ứng
+    if (typeLower === 'vibration') {
+      if (payload.amp !== undefined) state.amp = +payload.amp;
+      else if (payload.value !== undefined) state.amp = +payload.value;
+      else if (payload.val !== undefined) state.amp = +payload.val;
+
+      if (payload.freq !== undefined) state.freq = +payload.freq;
+    } else if (typeLower === 'water_level' || typeLower === 'waterlevel' || typeLower === 'water') {
+      if (payload.waterLevel !== undefined) state.waterLevel = +payload.waterLevel;
+      else if (payload.water_level !== undefined) state.waterLevel = +payload.water_level;
+      else if (payload.value !== undefined) state.waterLevel = +payload.value;
+      else if (payload.val !== undefined) state.waterLevel = +payload.val;
+    } else if (typeLower === 'moisture' || typeLower === 'humidity' || typeLower === 'humid') {
+      if (payload.moisture !== undefined) state.moisture = +payload.moisture;
+      else if (payload.humidity !== undefined) state.moisture = +payload.humidity;
+      else if (payload.value !== undefined) state.moisture = +payload.value;
+      else if (payload.val !== undefined) state.moisture = +payload.val;
+    } else {
+      // Trường hợp payload tổng hoặc loại cảm biến khác
+      if (payload.freq !== undefined) state.freq = +payload.freq;
+      if (payload.amp !== undefined) state.amp = +payload.amp;
+      if (payload.waterLevel !== undefined) state.waterLevel = +payload.waterLevel;
+      if (payload.water_level !== undefined) state.waterLevel = +payload.water_level;
+      if (payload.moisture !== undefined) state.moisture = +payload.moisture;
+      if (payload.humidity !== undefined) state.moisture = +payload.humidity;
+    }
+
+    // 3. Cập nhật trạng thái 'online' và lastSeenAt cho Gateway & Node trong DB
+    const now = new Date();
+    if (gatewayId) {
+      this.gatewayRepo.update(gatewayId, { status: 'online', lastSeenAt: now }).catch(() => {});
+    }
+    if (nodeId) {
+      this.nodeRepo.update(nodeId, { status: 'online', lastSeenAt: now }).catch(() => {});
+    }
+
+    // 4. Tra cứu trạm (stationId) cập nhật mới nhất từ memory cache
+    const stationInfo = await this.getNodeStationInfo(nodeId, gatewayId);
+    state.stationId = stationInfo.stationId;
+    state.damId = stationInfo.damId;
+
+    const dto = new SensorDataDto(
+      state.freq,
+      state.amp,
+      state.waterLevel,
+      state.moisture,
+      undefined,
+      key,
+      state.stationId,
+      state.damId || DEFAULT_DAM_ID,
+    );
+
+    return this.ingest(dto);
+  }
 
   getLatest(stationId?: number, clusterId?: string): SensorSnapshot | null {
     if (stationId && this.latestByStation.has(stationId)) {
       return this.latestByStation.get(stationId)!;
     }
-    if (clusterId && this.latestByCluster.has(clusterId)) {
-      return this.latestByCluster.get(clusterId)!;
+    if (clusterId && this.latestByNode.has(clusterId)) {
+      return this.latestByNode.get(clusterId)!;
     }
     return this.latest;
   }
@@ -266,6 +448,10 @@ export class SensorService implements OnModuleInit {
   async updateThresholdConfig(id: string, update: Partial<ThresholdConfig>): Promise<ThresholdConfig> {
     await this.thresholdConfigRepo.update(id, update);
     const updated = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
+
+    this.thresholdConfigCache.delete(updated.damId);
+    const configs = await this.thresholdConfigRepo.find({ where: { damId: updated.damId } });
+    this.thresholdConfigCache.set(updated.damId, configs);
 
     await this.auditLogService.logAction({
       action: 'UPDATE_THRESHOLD',
@@ -396,7 +582,7 @@ export class SensorService implements OnModuleInit {
       console.log('[SensorService] Lỗi tra cứu thông tin Trạm/Đập:', err.message);
     }
 
-    // Chỉ kích hoạt Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
+    // Chỉ kích hoạt cờ Camera AI khi cảnh báo về ĐỘ RUNG ở mức ALERT hoặc CRITICAL
     if (sensorType === 'vibration' && (severity === 'ALERT' || severity === 'CRITICAL')) {
       event.cameraActivated = true;
     }
@@ -404,10 +590,125 @@ export class SensorService implements OnModuleInit {
     await this.alarmEventRepo.save(event);
     console.log(`[SensorService] ĐÃ TẠO SỰ KIỆN CẢNH BÁO: [${severity}] cho ${sensorType} tại [${event.stationName || stationId || 'Trạm Quan Trắc'}] - Đập [${event.damName || damId}]`);
 
-    if (event.cameraActivated) {
-      this.triggerAiCamera(event);
+    // Ghi chú: Không tự động gửi HTTP POST triggerAiCamera() ở đây để tránh kích hoạt kép (double trigger)
+    // Jetson TX2 Edge Gateway đã tự động kiểm tra độ rung tại chỗ, tự chụp ảnh & chạy YOLO AI,
+    // sau đó gửi kết quả qua MQTT events/gateway/.../anomaly và POST /evidence/upload.
+
+    return event;
+  }
+
+  /**
+   * Handle anomaly events published by Jetson TX2 via Cloud MQTT
+   * Topic: events/gateway/{gateway_id}/anomaly
+   */
+  async handleAnomalyEvent(payload: {
+    event_id?: string;
+    eventId?: string;
+    gateway_id: string;
+    node_id: string;
+    camera_id?: string;
+    severity?: string;
+    measured_val?: number;
+    measuredVal?: number;
+    duration_sec?: number;
+    crack_detected?: boolean;
+    confidence: number;
+    crack_size?: number;
+    timestamp?: string;
+  }): Promise<AlarmEvent> {
+    const eventId = payload.event_id || payload.eventId;
+    const isCrack = payload.crack_detected ?? false;
+    const measuredVal = payload.measured_val ?? payload.measuredVal ?? (payload.crack_size && payload.crack_size > 0 ? payload.crack_size : 0);
+    const severity = isCrack
+      ? 'CRITICAL'
+      : (payload.severity || 'ALERT');
+
+    console.log(
+      `[SensorService] Nhận sự kiện Anomaly từ Gateway ${payload.gateway_id} / Node ${payload.node_id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${measuredVal} mm/s, Severity: ${severity}, Crack: ${isCrack})`,
+    );
+
+    // 1. Resolve target damId from node or gateway relations
+    let targetDamId = DEFAULT_DAM_ID;
+    let targetThreshold = 15.0;
+    if (payload.node_id) {
+      try {
+        const node = await this.nodeRepo.findOne({
+          where: { id: payload.node_id },
+          relations: { gateway: { station: true } },
+        });
+        if (node?.gateway?.station?.damId) {
+          targetDamId = node.gateway.station.damId;
+        }
+        if (node?.vibrationThreshold != null) {
+          targetThreshold = node.vibrationThreshold;
+        }
+      } catch (err: any) {
+        console.warn('[SensorService] Lỗi tra cứu damId theo node:', err.message);
+      }
+    } else if (payload.gateway_id) {
+      try {
+        const gw = await this.gatewayRepo.findOne({
+          where: { id: payload.gateway_id },
+          relations: { station: true },
+        });
+        if (gw?.station?.damId) {
+          targetDamId = gw.station.damId;
+        }
+      } catch (err: any) {
+        console.warn('[SensorService] Lỗi tra cứu damId theo gateway:', err.message);
+      }
     }
 
+    // 2. Tìm AlarmEvent theo eventId duy nhất của sự cố
+    let event: AlarmEvent | null = null;
+    if (eventId) {
+      event = await this.alarmEventRepo.findOne({ where: { eventId } });
+    }
+
+    if (!event) {
+      // Tìm AlarmEvent vừa mới được tạo trong 30s chưa có kết quả AI
+      const recentCutoff = new Date(Date.now() - 30 * 1000);
+      event = await this.alarmEventRepo.findOne({
+        where: {
+          sensorId: payload.node_id,
+          triggeredAt: MoreThan(recentCutoff),
+        },
+        order: { triggeredAt: 'DESC' },
+      });
+    }
+
+    if (event) {
+      // Ghép dữ liệu AI từ MQTT vào AlarmEvent hiện có
+      if (eventId && !event.eventId) event.eventId = eventId;
+      event.crackDetected = isCrack;
+      event.crackConfidence = payload.confidence;
+      if (measuredVal > 0) {
+        event.measuredVal = measuredVal;
+      }
+      event.severity = severity;
+      event.notes = isCrack
+        ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
+        : `Camera AI trên Jetson TX2 (${payload.gateway_id}) đã kiểm tra - Không phát hiện vết nứt. Confidence: ${(payload.confidence * 100).toFixed(1)}%`;
+      console.log(`[SensorService] Đã ghép thành công dữ liệu AI vào Alarm ${event.id} (eventId: ${eventId || 'N/A'}, MeasuredVal: ${event.measuredVal})`);
+    } else {
+      // MQTT đến trước và chưa có alarm nào từ cảm biến -> Tạo mới AlarmEvent
+      event = new AlarmEvent();
+      event.eventId = eventId || undefined;
+      event.damId = targetDamId;
+      event.sensorId = payload.node_id || 'NOD-ST01-ESP01';
+      event.sensorType = 'vibration';
+      event.severity = severity;
+      event.thresholdVal = targetThreshold;
+      event.measuredVal = measuredVal;
+      event.crackDetected = isCrack;
+      event.crackConfidence = payload.confidence;
+      event.cameraActivated = true;
+      event.notes = isCrack
+        ? `Phát hiện vết nứt bằng YOLO AI trên Jetson TX2 (${payload.gateway_id}). Confidence: ${(payload.confidence * 100).toFixed(1)}%`
+        : `Camera AI trên Jetson TX2 (${payload.gateway_id}) đã kiểm tra - Không phát hiện vết nứt. Confidence: ${(payload.confidence * 100).toFixed(1)}%`;
+    }
+
+    await this.alarmEventRepo.save(event);
     return event;
   }
 

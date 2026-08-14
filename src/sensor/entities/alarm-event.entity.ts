@@ -5,6 +5,9 @@ export class AlarmEvent {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ type: 'varchar', length: 64, nullable: true, unique: true })
+  eventId?: string;
+
   @Column({ type: 'varchar', length: 64 })
   damId: string;
 

@@ -6,6 +6,10 @@ import { SensorModule } from './sensor/sensor.module';
 import { DamModule } from './dam/dam.module';
 import { AuthModule } from './auth/auth.module';
 import { AuditLogModule } from './audit-log/audit-log.module';
+import { GatewayModule } from './gateway/gateway.module';
+import { NodeModule } from './node/node.module';
+import { CameraModule } from './camera/camera.module';
+import { EvidenceModule } from './evidence/evidence.module';
 
 @Module({
   imports: [
@@ -31,7 +35,12 @@ import { AuditLogModule } from './audit-log/audit-log.module';
     DamModule,
     AuthModule,
     AuditLogModule,
+    GatewayModule,
+    NodeModule,
+    CameraModule,
+    EvidenceModule,
   ],
 })
 export class AppModule {}
+
 

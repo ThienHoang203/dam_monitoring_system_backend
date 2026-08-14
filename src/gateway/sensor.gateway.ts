@@ -28,8 +28,18 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   handleDisconnect(_client: Socket) { }
 
+  private lastBroadcastMap: Map<string, number> = new Map();
+  private readonly THROTTLE_MS = 50; // Giới hạn tối đa 20 FPS qua WebSocket để dữ liệu mượt mà
+
   broadcastUpdate(snapshot: SensorSnapshot) {
-    this.server.emit('update', snapshot);
+    const key = snapshot.clusterId || (snapshot.stationId ? `st_${snapshot.stationId}` : 'default');
+    const now = Date.now();
+    const last = this.lastBroadcastMap.get(key) || 0;
+
+    if (now - last >= this.THROTTLE_MS) {
+      this.lastBroadcastMap.set(key, now);
+      this.server.emit('update', snapshot);
+    }
   }
 
   // Broadcast alarm event mới tới tất cả client

@@ -1,11 +1,15 @@
 import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
 import { Dam } from './dam.entity';
-import { SensorCluster } from '../../sensor/entities/sensor-cluster.entity';
+import { Gateway } from '../../gateway/entities/gateway.entity';
 
 @Entity('stations')
 export class Station {
   @PrimaryGeneratedColumn()
   id: number;
+
+  // Station code used in child device IDs (e.g. 'ST01' → GTW-ST01-TX2A, NOD-ST01-ESP01)
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  stationCode: string;
 
   @Column({ type: 'varchar', length: 200 })
   name: string;
@@ -59,8 +63,8 @@ export class Station {
   @JoinColumn({ name: 'damId' })
   dam: Dam;
 
-  @OneToMany(() => SensorCluster, cluster => cluster.station, { cascade: true })
-  sensorClusters: SensorCluster[];
+  @OneToMany(() => Gateway, gateway => gateway.station, { cascade: true })
+  gateways: Gateway[];
 
   @CreateDateColumn()
   createdAt: Date;

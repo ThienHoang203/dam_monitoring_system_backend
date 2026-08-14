@@ -9,27 +9,25 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { Station } from '../../dam/entities/station.entity';
-import { SensorDevice } from './sensor-device.entity';
+import { Camera } from '../../camera/entities/camera.entity';
+import { Node } from '../../node/entities/node.entity';
 
-@Entity('sensor_clusters')
-export class SensorCluster {
+@Entity('gateways')
+export class Gateway {
   @PrimaryColumn({ type: 'varchar', length: 64 })
-  id: string;
+  id: string; // GTW-ST01-TX2A
 
   @Column({ type: 'varchar', length: 200 })
   name: string;
 
-  @Column({ type: 'varchar', length: 200, nullable: true })
-  description: string;
-
-  @Column({ type: 'varchar', length: 100, nullable: true })
-  espMacAddress: string;
+  @Column({ type: 'varchar', length: 100, unique: true })
+  macAddress: string;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
   firmwareVersion: string;
 
   @Column({ type: 'varchar', length: 200, nullable: true })
-  installLocation: string;
+  description: string;
 
   @Column({ type: 'varchar', length: 16, default: 'offline' })
   status: string; // 'online' | 'offline' | 'error'
@@ -40,17 +38,15 @@ export class SensorCluster {
   @Column({ type: 'integer' })
   stationId: number;
 
-  @ManyToOne(() => Station, (station) => station.sensorClusters, {
-    onDelete: 'CASCADE',
-  })
+  @ManyToOne(() => Station, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'stationId' })
   station: Station;
 
-  @OneToMany(() => SensorDevice, (device) => device.cluster, {
-    cascade: true,
-    eager: true,
-  })
-  devices: SensorDevice[];
+  @OneToMany(() => Camera, (camera) => camera.gateway, { cascade: true })
+  cameras: Camera[];
+
+  @OneToMany(() => Node, (node) => node.gateway, { cascade: true })
+  nodes: Node[];
 
   @CreateDateColumn()
   createdAt: Date;

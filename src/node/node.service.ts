@@ -33,14 +33,26 @@ export class NodeService {
 
   // ── Node CRUD ──
 
-  async findAll(gatewayId?: string): Promise<Node[]> {
-    const where: any = {};
-    if (gatewayId) where.gatewayId = gatewayId;
-    return this.nodeRepo.find({
-      where,
-      relations: { sensors: true, mappedCamera: true, gateway: { station: true } },
-      order: { createdAt: 'ASC' },
-    });
+  async findAll(gatewayId?: string, stationId?: number, damId?: string): Promise<Node[]> {
+    const qb = this.nodeRepo.createQueryBuilder('node')
+      .leftJoinAndSelect('node.sensors', 'sensors')
+      .leftJoinAndSelect('node.mappedCamera', 'mappedCamera')
+      .leftJoinAndSelect('node.gateway', 'gateway')
+      .leftJoinAndSelect('gateway.station', 'station')
+      .leftJoinAndSelect('station.dam', 'dam')
+      .orderBy('node.createdAt', 'ASC');
+
+    if (gatewayId) {
+      qb.andWhere('node.gatewayId = :gatewayId', { gatewayId });
+    }
+    if (stationId) {
+      qb.andWhere('gateway.stationId = :stationId', { stationId });
+    }
+    if (damId && damId !== 'all') {
+      qb.andWhere('station.damId = :damId', { damId });
+    }
+
+    return qb.getMany();
   }
 
   async findById(id: string): Promise<Node> {

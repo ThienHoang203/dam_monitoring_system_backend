@@ -23,8 +23,16 @@ export class NodeController {
   // ── Node CRUD ──
 
   @Get()
-  async findAll(@Query('gatewayId') gatewayId?: string) {
-    const nodes = await this.nodeService.findAll(gatewayId);
+  async findAll(
+    @Query('gatewayId') gatewayId?: string,
+    @Query('stationId') stationId?: string,
+    @Query('damId') damId?: string,
+  ) {
+    const nodes = await this.nodeService.findAll(
+      gatewayId,
+      stationId ? parseInt(stationId, 10) : undefined,
+      damId,
+    );
     return { nodes };
   }
 

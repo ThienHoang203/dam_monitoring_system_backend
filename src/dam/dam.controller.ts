@@ -8,28 +8,41 @@ import {
   Param,
   Query,
   ParseIntPipe,
+  ForbiddenException,
+  UseGuards,
 } from '@nestjs/common';
 import { DamService } from './dam.service';
 import { CreateDamDto, UpdateDamDto, CreateStationDto, UpdateStationDto } from './dam.dto';
-
-import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../auth/entities/user.entity';
 
 @Controller()
 export class DamController {
   constructor(private readonly damService: DamService) {}
 
-  // ── Dam Endpoints (GET là Công Khai cho Khách xem VIEWER) ──
+  // ── Dam Endpoints ──
   @Get('dams')
-  async findAllDams() {
-    const dams = await this.damService.findAllDams();
+  @UseGuards(OptionalJwtAuthGuard)
+  async findAllDams(@CurrentUser() user?: User) {
+    let dams = await this.damService.findAllDams();
+    // Nếu là Cán bộ OPERATOR có gán đập cụ thể -> Chỉ hiển thị đập được phân công
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      dams = dams.filter(d => d.id === user.assignedDamId);
+    }
     return { dams };
   }
 
   @Get('dams/:id')
-  async findDamById(@Param('id') id: string) {
+  @UseGuards(OptionalJwtAuthGuard)
+  async findDamById(@Param('id') id: string, @CurrentUser() user?: User) {
+    // Nếu là OPERATOR cố tình truy cập đập khác ngoài phạm vi được phân công
+    if (user?.role === 'OPERATOR' && user?.assignedDamId && user.assignedDamId !== id) {
+      throw new ForbiddenException('Bạn không có quyền truy cập đập thủy điện này');
+    }
     const dam = await this.damService.findDamById(id);
     return { dam };
   }
@@ -57,16 +70,25 @@ export class DamController {
     return this.damService.deleteDam(id);
   }
 
-  // ── Station Endpoints (GET là Công Khai cho Khách xem VIEWER) ──
+  // ── Station Endpoints ──
   @Get('stations')
-  async findAllStations(@Query('damId') damId?: string) {
-    const stations = await this.damService.findAllStations(damId);
+  @UseGuards(OptionalJwtAuthGuard)
+  async findAllStations(@Query('damId') damId?: string, @CurrentUser() user?: User) {
+    let effectiveDamId = damId;
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      effectiveDamId = user.assignedDamId;
+    }
+    const stations = await this.damService.findAllStations(effectiveDamId);
     return { stations };
   }
 
   @Get('stations/:id')
-  async findStationById(@Param('id', ParseIntPipe) id: number) {
+  @UseGuards(OptionalJwtAuthGuard)
+  async findStationById(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: User) {
     const station = await this.damService.findStationById(id);
+    if (user?.role === 'OPERATOR' && user?.assignedDamId && station.damId !== user.assignedDamId) {
+      throw new ForbiddenException('Bạn không có quyền truy cập trạm quan trắc của đập này');
+    }
     return { station };
   }
 

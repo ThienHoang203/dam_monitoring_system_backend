@@ -355,11 +355,8 @@ export class SensorController {
 
     // Nếu là OPERATOR: Bắt buộc chỉ lấy cảnh báo của đập được phân công
     if (user && user.role === 'OPERATOR') {
-      targetDamId = user.assignedDamId || damId || 'dam_1';
-    }
-
-    // Nếu damId === 'all' hoặc không truyền damId (hoặc là ADMIN chọn xem tất cả đập)
-    if (damId === 'all' || (!damId && (!user || user.role === 'ADMIN'))) {
+      targetDamId = user.assignedDamId || 'dam_1';
+    } else if (damId === 'all' || !damId) {
       targetDamId = undefined;
     }
 

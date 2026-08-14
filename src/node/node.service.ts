@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -19,6 +20,7 @@ import {
 } from '../common/validators/naming-convention.validator';
 import { GatewayService } from '../gateway/gateway.service';
 import { SensorService } from '../sensor/sensor.service';
+import { CameraService } from '../camera/camera.service';
 
 @Injectable()
 export class NodeService {
@@ -29,7 +31,45 @@ export class NodeService {
     private readonly sensorRepo: Repository<Sensor>,
     private readonly gatewayService: GatewayService,
     private readonly sensorService: SensorService,
+    private readonly cameraService: CameraService,
   ) {}
+
+  /**
+   * Validate vibration threshold ordering per Edge Gateway config contract:
+   * warn_high < alert_high < critical_high; alert_min_count >= 1; *_sec >= 0.
+   */
+  private validateThresholds(
+    warnHigh: number,
+    alertHigh: number,
+    criticalHigh: number,
+    alertMinCount: number,
+    alertMinDurationSec: number,
+    episodeResetGapSec: number,
+  ): void {
+    if (!(warnHigh < alertHigh && alertHigh < criticalHigh)) {
+      throw new BadRequestException(
+        `Ngưỡng không hợp lệ: yêu cầu warn_high (${warnHigh}) < alert_high (${alertHigh}) < critical_high (${criticalHigh}).`,
+      );
+    }
+    if (!(alertMinCount >= 1)) {
+      throw new BadRequestException('alert_min_count phải >= 1.');
+    }
+    if (!(alertMinDurationSec >= 0) || !(episodeResetGapSec >= 0)) {
+      throw new BadRequestException(
+        'alert_min_duration_sec và episode_reset_gap_sec phải >= 0.',
+      );
+    }
+  }
+
+  private async assertCameraExists(cameraId: string): Promise<void> {
+    try {
+      await this.cameraService.findById(cameraId);
+    } catch {
+      throw new BadRequestException(
+        `Camera "${cameraId}" không tồn tại, không thể gán cho node.`,
+      );
+    }
+  }
 
   // ── Node CRUD ──
 
@@ -124,8 +164,26 @@ export class NodeService {
     node.firmwareVersion = dto.firmwareVersion || 'v1.0.0';
     if (dto.installLocation) node.installLocation = dto.installLocation;
     node.vibrationThreshold = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : 15.0;
+    node.warnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : 2.5;
+    node.criticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : 25.0;
+    node.alertMinCount = dto.alertMinCount != null ? Number(dto.alertMinCount) : 4;
+    node.alertMinDurationSec = dto.alertMinDurationSec != null ? Number(dto.alertMinDurationSec) : 6.0;
+    node.episodeResetGapSec = dto.episodeResetGapSec != null ? Number(dto.episodeResetGapSec) : 3.0;
+
+    this.validateThresholds(
+      node.warnHigh,
+      node.vibrationThreshold,
+      node.criticalHigh,
+      node.alertMinCount,
+      node.alertMinDurationSec,
+      node.episodeResetGapSec,
+    );
+
     node.gatewayId = gatewayId;
-    if (dto.mappedCameraId) node.mappedCameraId = dto.mappedCameraId;
+    if (dto.mappedCameraId) {
+      await this.assertCameraExists(dto.mappedCameraId);
+      node.mappedCameraId = dto.mappedCameraId;
+    }
 
     const saved = await this.nodeRepo.save(node);
     const createdNode = await this.findById(saved.id);
@@ -154,9 +212,48 @@ export class NodeService {
     if (dto.firmwareVersion !== undefined) updateData.firmwareVersion = dto.firmwareVersion;
     if (dto.installLocation !== undefined) updateData.installLocation = dto.installLocation;
     if (dto.status !== undefined) updateData.status = dto.status;
-    if (dto.vibrationThreshold !== undefined) updateData.vibrationThreshold = Number(dto.vibrationThreshold);
     if (dto.gatewayId !== undefined) updateData.gatewayId = dto.gatewayId;
-    if (dto.mappedCameraId !== undefined) updateData.mappedCameraId = dto.mappedCameraId;
+
+    // Merge incoming threshold fields with current values to validate the
+    // *effective* ordering (warn_high < alert_high < critical_high), since a
+    // partial update may only touch one of the three fields.
+    const effectiveWarnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : existing.warnHigh;
+    const effectiveAlertHigh = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : existing.vibrationThreshold;
+    const effectiveCriticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : existing.criticalHigh;
+    const effectiveAlertMinCount = dto.alertMinCount != null ? Number(dto.alertMinCount) : existing.alertMinCount;
+    const effectiveAlertMinDurationSec = dto.alertMinDurationSec != null ? Number(dto.alertMinDurationSec) : existing.alertMinDurationSec;
+    const effectiveEpisodeResetGapSec = dto.episodeResetGapSec != null ? Number(dto.episodeResetGapSec) : existing.episodeResetGapSec;
+
+    const thresholdFieldsChanged =
+      dto.warnHigh !== undefined ||
+      dto.vibrationThreshold !== undefined ||
+      dto.criticalHigh !== undefined ||
+      dto.alertMinCount !== undefined ||
+      dto.alertMinDurationSec !== undefined ||
+      dto.episodeResetGapSec !== undefined;
+
+    if (thresholdFieldsChanged) {
+      this.validateThresholds(
+        effectiveWarnHigh,
+        effectiveAlertHigh,
+        effectiveCriticalHigh,
+        effectiveAlertMinCount,
+        effectiveAlertMinDurationSec,
+        effectiveEpisodeResetGapSec,
+      );
+    }
+
+    if (dto.vibrationThreshold !== undefined) updateData.vibrationThreshold = effectiveAlertHigh;
+    if (dto.warnHigh !== undefined) updateData.warnHigh = effectiveWarnHigh;
+    if (dto.criticalHigh !== undefined) updateData.criticalHigh = effectiveCriticalHigh;
+    if (dto.alertMinCount !== undefined) updateData.alertMinCount = effectiveAlertMinCount;
+    if (dto.alertMinDurationSec !== undefined) updateData.alertMinDurationSec = effectiveAlertMinDurationSec;
+    if (dto.episodeResetGapSec !== undefined) updateData.episodeResetGapSec = effectiveEpisodeResetGapSec;
+
+    if (dto.mappedCameraId !== undefined) {
+      if (dto.mappedCameraId) await this.assertCameraExists(dto.mappedCameraId);
+      updateData.mappedCameraId = dto.mappedCameraId;
+    }
 
     // Resolve stationId change to corresponding Gateway
     if (dto.stationId != null) {
@@ -233,6 +330,7 @@ export class NodeService {
     cameraId: string | null,
   ): Promise<Node> {
     const node = await this.findById(nodeId);
+    if (cameraId) await this.assertCameraExists(cameraId);
     await this.nodeRepo.update(nodeId, { mappedCameraId: cameraId });
     const updated = await this.findById(nodeId);
     if (updated.gatewayId) {

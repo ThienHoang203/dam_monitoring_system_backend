@@ -3,6 +3,8 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,12 +14,15 @@ import {
   validateDeviceId,
   validateCameraType,
 } from '../common/validators/naming-convention.validator';
+import { GatewayService } from '../gateway/gateway.service';
 
 @Injectable()
 export class CameraService {
   constructor(
     @InjectRepository(Camera)
     private readonly cameraRepo: Repository<Camera>,
+    @Inject(forwardRef(() => GatewayService))
+    private readonly gatewayService: GatewayService,
   ) {}
 
   async findAll(gatewayId?: string): Promise<Camera[]> {
@@ -53,18 +58,32 @@ export class CameraService {
     }
 
     const camera = this.cameraRepo.create(dto);
-    return this.cameraRepo.save(camera);
+    const saved = await this.cameraRepo.save(camera);
+    this.gatewayService.publishGatewayConfig(saved.gatewayId).catch(() => {});
+    return saved;
   }
 
   async update(id: string, dto: UpdateCameraDto): Promise<Camera> {
-    await this.findById(id);
+    const existing = await this.findById(id);
+
+    // Enforce: IP camera requires stream_url (either already set or provided now)
+    const effectiveStreamUrl = dto.streamUrl !== undefined ? dto.streamUrl : existing.streamUrl;
+    if (existing.cameraType === 'IP' && !effectiveStreamUrl) {
+      throw new BadRequestException(
+        'Camera loại IP bắt buộc phải có streamUrl (RTSP URL).',
+      );
+    }
+
     await this.cameraRepo.update(id, dto);
-    return this.findById(id);
+    const updated = await this.findById(id);
+    this.gatewayService.publishGatewayConfig(updated.gatewayId).catch(() => {});
+    return updated;
   }
 
   async delete(id: string): Promise<{ ok: boolean }> {
     const camera = await this.findById(id);
     await this.cameraRepo.remove(camera);
+    this.gatewayService.publishGatewayConfig(camera.gatewayId).catch(() => {});
     return { ok: true };
   }
 }

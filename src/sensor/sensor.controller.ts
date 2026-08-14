@@ -254,6 +254,35 @@ export class SensorController {
     }
   }
 
+  /**
+   * Topic: status/gateway/{gateway_id}/node/{node_id}/vibration
+   * Trạng thái ngưỡng độ rung đã xử lý — gửi cả khi breach=false (NORMAL/WARNING),
+   * dùng cho dashboard vẽ biểu đồ ngưỡng realtime qua WebSocket.
+   */
+  @MessagePattern('status/gateway/+/node/+/vibration')
+  async ingestVibrationStatusMqtt(
+    @Payload() payload: any,
+    @Ctx() context: MqttContext,
+  ) {
+    try {
+      const topic = context.getTopic();
+      const parts = topic.split('/');
+      const gatewayId = parts[2] || '';
+      const nodeId = parts[4] || '';
+
+      const status = await this.sensorService.handleVibrationStatus(
+        gatewayId,
+        nodeId,
+        payload,
+      );
+      this.gateway.broadcastVibrationStatus(status);
+      return { ok: true };
+    } catch (error: any) {
+      console.error('[MQTT Vibration Status] Lỗi xử lý trạng thái ngưỡng độ rung:', error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
   @MessagePattern('events/gateway/+/anomaly')
   async ingestAnomalyMqtt(@Payload() payload: any) {
     try {

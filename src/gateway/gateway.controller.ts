@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Query,
+  Headers,
 } from '@nestjs/common';
 import { GatewayService } from './gateway.service';
 import { CreateGatewayDto, UpdateGatewayDto } from './gateway.dto';
@@ -51,7 +52,11 @@ export class GatewayController {
   // This is the endpoint the Jetson TX2 calls on startup and periodically.
   // Path uses singular "gateway" to match the Jetson's fetch_initial_config() URL.
   @Get('api/gateway/:id/config')
-  async getConfig(@Param('id') id: string) {
+  async getConfig(
+    @Param('id') id: string,
+    @Headers('x-gateway-api-key') apiKey?: string,
+  ) {
+    this.gatewayService.validateGatewayApiKey(apiKey);
     return this.gatewayService.getGatewayConfig(id);
   }
 }

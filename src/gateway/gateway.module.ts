@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Gateway } from './entities/gateway.entity';
 import { GatewayService } from './gateway.service';
@@ -8,7 +8,7 @@ import { CameraModule } from '../camera/camera.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Gateway]),
-    CameraModule,
+    forwardRef(() => CameraModule),
   ],
   controllers: [GatewayController],
   providers: [GatewayService],

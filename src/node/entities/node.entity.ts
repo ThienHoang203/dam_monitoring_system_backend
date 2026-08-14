@@ -38,9 +38,25 @@ export class Node {
   @Column({ type: 'timestamptz', nullable: true })
   lastSeenAt: Date;
 
-  // Vibration threshold for this node (used by Jetson config sync)
+  // Vibration threshold for this node (used by Jetson config sync) — maps to alert_high
   @Column({ type: 'float', default: 15.0 })
   vibrationThreshold: number;
+
+  // Full vibration threshold config synced to Jetson TX2 via GET/config & MQTT config/gateway/:id/update
+  @Column({ type: 'float', default: 2.5 })
+  warnHigh: number;
+
+  @Column({ type: 'float', default: 25.0 })
+  criticalHigh: number;
+
+  @Column({ type: 'int', default: 4 })
+  alertMinCount: number;
+
+  @Column({ type: 'float', default: 6.0 })
+  alertMinDurationSec: number;
+
+  @Column({ type: 'float', default: 3.0 })
+  episodeResetGapSec: number;
 
   @Column({ type: 'varchar', length: 64 })
   gatewayId: string;

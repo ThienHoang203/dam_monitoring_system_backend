@@ -6,7 +6,12 @@ export class CreateNodeDto {
   description?: string;
   firmwareVersion?: string;
   installLocation?: string;
-  vibrationThreshold?: number;
+  vibrationThreshold?: number; // alert_high
+  warnHigh?: number;
+  criticalHigh?: number;
+  alertMinCount?: number;
+  alertMinDurationSec?: number;
+  episodeResetGapSec?: number;
   gatewayId?: string;
   stationId?: number;
   mappedCameraId?: string;
@@ -20,7 +25,12 @@ export class UpdateNodeDto {
   firmwareVersion?: string;
   installLocation?: string;
   status?: string;
-  vibrationThreshold?: number;
+  vibrationThreshold?: number; // alert_high
+  warnHigh?: number;
+  criticalHigh?: number;
+  alertMinCount?: number;
+  alertMinDurationSec?: number;
+  episodeResetGapSec?: number;
   gatewayId?: string;
   stationId?: number;
   mappedCameraId?: string;

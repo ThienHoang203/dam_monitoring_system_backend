@@ -46,4 +46,10 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
   broadcastAlarm(alarm: any) {
     this.server.emit('alarm', alarm);
   }
+
+  // Broadcast trạng thái ngưỡng độ rung realtime (status/gateway/{id}/node/{id}/vibration)
+  // cho dashboard vẽ biểu đồ ngưỡng, kể cả khi breach=false (NORMAL/WARNING).
+  broadcastVibrationStatus(status: any) {
+    this.server.emit('vibration_status', status);
+  }
 }

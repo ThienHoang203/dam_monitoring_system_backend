@@ -3,6 +3,7 @@ import {
   OnModuleInit,
   NotFoundException,
   ConflictException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -106,29 +107,31 @@ export class GatewayService implements OnModuleInit {
       throw new NotFoundException(`Gateway "${gatewayId}" không tồn tại.`);
     }
 
-    // Build nodes map: { node_id: { camera_id, threshold, warn_high, alert_high, critical_high } }
+    // Build nodes map per Edge Gateway contract:
+    // { node_id: { camera_id, warn_high, alert_high, critical_high, alert_min_count, alert_min_duration_sec, episode_reset_gap_sec } }
     const nodesMap: Record<string, any> = {};
     if (gw.nodes) {
       for (const node of gw.nodes) {
-        const threshold = node.vibrationThreshold ?? 15.0;
         nodesMap[node.id] = {
           camera_id: node.mappedCameraId || null,
-          threshold: threshold,
-          warn_high: 2.5,
-          alert_high: threshold,
-          critical_high: 25.0,
+          warn_high: node.warnHigh ?? 2.5,
+          alert_high: node.vibrationThreshold ?? 15.0,
+          critical_high: node.criticalHigh ?? 25.0,
+          alert_min_count: node.alertMinCount ?? 4,
+          alert_min_duration_sec: node.alertMinDurationSec ?? 6.0,
+          episode_reset_gap_sec: node.episodeResetGapSec ?? 3.0,
         };
       }
     }
 
-    // Build cameras map: { camera_id: { camera_type, stream_url } }
+    // Build cameras map: { camera_id: { camera_type, stream_url? } }
+    // stream_url chỉ xuất hiện khi có giá trị thực (bắt buộc với IP, không cần với CSI).
     const camerasMap: Record<string, any> = {};
     if (gw.cameras) {
       for (const cam of gw.cameras) {
-        camerasMap[cam.id] = {
-          camera_type: cam.cameraType,
-          stream_url: cam.streamUrl || null,
-        };
+        const camObj: any = { camera_type: cam.cameraType };
+        if (cam.streamUrl) camObj.stream_url = cam.streamUrl;
+        camerasMap[cam.id] = camObj;
       }
     }
 
@@ -154,6 +157,19 @@ export class GatewayService implements OnModuleInit {
       });
     } catch (err: any) {
       console.warn(`[GatewayService] Error preparing config broadcast for ${gatewayId}:`, err.message);
+    }
+  }
+
+  /**
+   * Optional auth for the Jetson-facing config endpoint.
+   * Only enforced when GATEWAY_API_KEY is set in the environment — keeps
+   * backward compatibility with gateways that don't send any auth header.
+   */
+  validateGatewayApiKey(apiKey?: string): void {
+    const expected = this.configService.get<string>('GATEWAY_API_KEY');
+    if (!expected) return;
+    if (!apiKey || apiKey !== expected) {
+      throw new UnauthorizedException('API key của gateway không hợp lệ hoặc bị thiếu.');
     }
   }
 

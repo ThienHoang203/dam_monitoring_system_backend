@@ -27,6 +27,8 @@ export class SensorService implements OnModuleInit {
   private thresholdConfigCache: Map<string, ThresholdConfig[]> = new Map();
   private stationDeviceCache: Map<string, { stationId: number; damId: string }> = new Map();
 
+  private latestVibrationStatusByNode: Map<string, any> = new Map();
+
   private nodeStateCache: Map<string, {
     freq: number;
     amp: number;
@@ -377,6 +379,41 @@ export class SensorService implements OnModuleInit {
     return this.ingest(dto);
   }
 
+  /**
+   * Xử lý trạng thái ngưỡng độ rung đã xử lý từ Jetson TX2, gửi cả khi breach=false
+   * (NORMAL/WARNING) để dashboard vẽ biểu đồ ngưỡng realtime.
+   * Topic: status/gateway/{gateway_id}/node/{node_id}/vibration
+   */
+  async handleVibrationStatus(
+    gatewayId: string,
+    nodeId: string,
+    payload: {
+      node_id?: string;
+      severity?: string;
+      value?: number;
+      duration_sec?: number;
+      breach?: boolean;
+      timestamp?: string;
+    },
+  ): Promise<any> {
+    const targetNodeId = payload.node_id || nodeId;
+    const status = {
+      gatewayId,
+      nodeId: targetNodeId,
+      severity: payload.severity || 'NORMAL',
+      value: Number(payload.value ?? 0),
+      durationSec: Number(payload.duration_sec ?? 0),
+      breach: Boolean(payload.breach),
+      timestamp: payload.timestamp || new Date().toISOString(),
+    };
+    this.latestVibrationStatusByNode.set(targetNodeId, status);
+    return status;
+  }
+
+  getLatestVibrationStatus(nodeId: string): any {
+    return this.latestVibrationStatusByNode.get(nodeId) || null;
+  }
+
   getLatest(stationId?: number, clusterId?: string): SensorSnapshot | null {
     if (stationId && this.latestByStation.has(stationId)) {
       return this.latestByStation.get(stationId)!;
@@ -627,6 +664,8 @@ export class SensorService implements OnModuleInit {
       if (uploadedImageUrl && !event.imageUrl) {
         event.imageUrl = uploadedImageUrl;
       }
+      if (payload.duration_sec != null) event.durationS = Number(payload.duration_sec);
+      if (payload.crack_size != null) event.crackSize = Number(payload.crack_size);
       if (targetStationId && !event.stationId) event.stationId = targetStationId;
       if (targetStationName && !event.stationName) event.stationName = targetStationName;
       if (targetDamName && !event.damName) event.damName = targetDamName;
@@ -649,6 +688,8 @@ export class SensorService implements OnModuleInit {
       event.crackDetected = isCrack;
       event.crackConfidence = payload.confidence;
       event.cameraActivated = true;
+      if (payload.duration_sec != null) event.durationS = Number(payload.duration_sec);
+      if (payload.crack_size != null) event.crackSize = Number(payload.crack_size);
       if (uploadedImageUrl) event.imageUrl = uploadedImageUrl;
       if (targetStationId) event.stationId = targetStationId;
       if (targetStationName) event.stationName = targetStationName;

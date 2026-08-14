@@ -26,8 +26,11 @@ export class AlarmEvent {
   @Column({ type: 'float' })
   measuredVal: number;
 
-  @Column({ type: 'integer', nullable: true })
-  durationS: number; // số giây vượt ngưỡng liên tiếp
+  @Column({ type: 'float', nullable: true })
+  durationS: number; // duration_sec — thời lượng đợt rung (episode) tại thời điểm breach
+
+  @Column({ type: 'float', nullable: true })
+  crackSize: number; // crack_size — ước lượng diện tích vết nứt (pixel²) từ YOLO segmentation
 
   @CreateDateColumn({ type: 'timestamptz' })
   triggeredAt: Date;

@@ -308,18 +308,42 @@ export class SensorController {
     };
   }
 
-  // Lấy lịch sử dữ liệu thực tế từ TimescaleDB cho một loại cảm biến cụ thể
+  // Lấy lịch sử dữ liệu thực tế từ PostgreSQL / TimescaleDB
   @Get('history/long-term')
   async getLongTermHistory(
-    @Query('type') type: string,
+    @Query('type') type?: string,
+    @Query('damId') damId?: string,
+    @Query('stationId') stationId?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
     @Query('limit') limit?: string,
   ) {
-    if (!type) {
-      throw new BadRequestException('Query parameter "type" is required');
-    }
     const maxLimit = limit ? parseInt(limit, 10) : 100;
-    const data = await this.sensorService.getLongTermHistory(type, maxLimit);
+    const stId = stationId ? parseInt(stationId, 10) : undefined;
+    const data = await this.sensorService.getLongTermHistory({
+      sensorType: type,
+      damId,
+      stationId: stId,
+      startDate,
+      endDate,
+      limit: maxLimit,
+    });
     return { data };
+  }
+
+  // Thống kê KPI thực tế cho trang Lịch sử
+  @Get('history/kpi')
+  async getHistoryKpi(
+    @Query('damId') damId?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const kpi = await this.sensorService.getHistoryKpi({
+      damId,
+      startDate,
+      endDate,
+    });
+    return { kpi };
   }
 
   // Lấy danh sách Cán bộ phụ trách quản lý một Đập thủy điện

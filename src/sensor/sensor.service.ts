@@ -434,13 +434,111 @@ export class SensorService implements OnModuleInit {
     return this.history;
   }
 
-  // Lấy lịch sử dữ liệu thực tế từ TimescaleDB (cho Frontend hiển thị biểu đồ dài hạn)
-  async getLongTermHistory(sensorType: string, limit = 100): Promise<any[]> {
-    return this.sensorReadingRepo.find({
-      where: { sensorType },
-      order: { time: 'DESC' },
-      take: limit,
-    });
+  // Lấy lịch sử dữ liệu thực tế từ TimescaleDB/PostgreSQL (cho Frontend hiển thị biểu đồ dài hạn)
+  async getLongTermHistory(params: {
+    sensorType?: string;
+    damId?: string;
+    stationId?: number;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+  }): Promise<SensorReading[]> {
+    const limit = params.limit || 100;
+    const qb = this.sensorReadingRepo.createQueryBuilder('r')
+      .orderBy('r.time', 'ASC')
+      .take(limit);
+
+    if (params.sensorType && params.sensorType !== 'all') {
+      const typeLower = params.sensorType.toLowerCase();
+      if (typeLower === 'vibration' || typeLower === 'vib') {
+        qb.andWhere("(r.sensorType LIKE 'vibration%' OR r.sensorType = 'vib')");
+      } else if (typeLower === 'water_level' || typeLower === 'wtl') {
+        qb.andWhere("(r.sensorType IN ('water_level', 'wtl', 'water'))");
+      } else if (typeLower === 'moisture' || typeLower === 'mst') {
+        qb.andWhere("(r.sensorType IN ('moisture', 'humidity', 'mst'))");
+      } else {
+        qb.andWhere('r.sensorType = :sensorType', { sensorType: params.sensorType });
+      }
+    }
+
+    if (params.damId && params.damId !== 'all') {
+      qb.andWhere('r.damId = :damId', { damId: params.damId });
+    }
+
+    if (params.startDate) {
+      qb.andWhere('r.time >= :startDate', { startDate: new Date(params.startDate) });
+    }
+
+    if (params.endDate) {
+      qb.andWhere('r.time <= :endDate', { endDate: new Date(params.endDate) });
+    }
+
+    return qb.getMany();
+  }
+
+  // Thống kê KPI thực tế từ cơ sở dữ liệu
+  async getHistoryKpi(params: {
+    damId?: string;
+    startDate?: string;
+    endDate?: string;
+  }): Promise<{
+    totalAlarms: number;
+    maxWaterLevel: number;
+    avgResponseTimeSec: number;
+    unresolvedCount: number;
+  }> {
+    const alarmQb = this.alarmEventRepo.createQueryBuilder('a');
+    if (params.damId && params.damId !== 'all') {
+      alarmQb.andWhere('a.damId = :damId', { damId: params.damId });
+    }
+    if (params.startDate) {
+      alarmQb.andWhere('a.triggeredAt >= :startDate', { startDate: new Date(params.startDate) });
+    }
+    if (params.endDate) {
+      alarmQb.andWhere('a.triggeredAt <= :endDate', { endDate: new Date(params.endDate) });
+    }
+
+    const alarms = await alarmQb.getMany();
+    const totalAlarms = alarms.length;
+    const unresolvedCount = alarms.filter(a => !a.resolvedAt).length;
+
+    // Thời gian phản ứng trung bình của các sự kiện đã xử lý
+    let totalRespTimeSec = 0;
+    let resolvedCount = 0;
+    for (const a of alarms) {
+      if (a.resolvedAt && a.triggeredAt) {
+        const diffSec = (new Date(a.resolvedAt).getTime() - new Date(a.triggeredAt).getTime()) / 1000;
+        if (diffSec >= 0) {
+          totalRespTimeSec += diffSec;
+          resolvedCount++;
+        }
+      }
+    }
+    const avgResponseTimeSec = resolvedCount > 0 ? Math.round(totalRespTimeSec / resolvedCount) : 0;
+
+    // Mực nước cao nhất ghi nhận được trong kỳ
+    const readingQb = this.sensorReadingRepo.createQueryBuilder('r')
+      .where("r.sensorType IN ('water_level', 'wtl')");
+
+    if (params.damId && params.damId !== 'all') {
+      readingQb.andWhere('r.damId = :damId', { damId: params.damId });
+    }
+    if (params.startDate) {
+      readingQb.andWhere('r.time >= :startDate', { startDate: new Date(params.startDate) });
+    }
+    if (params.endDate) {
+      readingQb.andWhere('r.time <= :endDate', { endDate: new Date(params.endDate) });
+    }
+
+    const maxReading = await readingQb.select('MAX(r.value)', 'maxVal').getRawOne();
+    const maxWaterLevel = maxReading && maxReading.maxVal != null ? Number(maxReading.maxVal) : 0;
+
+    return {
+      totalAlarms,
+      maxWaterLevel,
+      avgResponseTimeSec,
+      unresolvedCount,
+    };
   }
 
   // Quản lý cấu hình ngưỡng

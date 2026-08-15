@@ -18,10 +18,13 @@ import { RolesGuard } from './guards/roles.guard';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET', 'super-secret-key-dam-monitoring-2026'),
-        signOptions: { expiresIn: '7d' },
-      }),
+      useFactory: (cfg: ConfigService) => {
+        const secret = cfg.get<string>('JWT_SECRET');
+        if (!secret || secret.length < 32) {
+          throw new Error('JWT_SECRET bắt buộc phải được cấu hình (>= 32 ký tự)');
+        }
+        return { secret, signOptions: { expiresIn: '1d' } };
+      },
     }),
   ],
   controllers: [AuthController, UserController],

@@ -4,6 +4,7 @@ import {
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Node } from './entities/node.entity';
@@ -345,6 +346,27 @@ export class NodeService {
       await this.nodeRepo.update(nodeId, { status: 'online', lastSeenAt });
     } catch {
       // Node not registered — ignore silently for backward compatibility
+    }
+  }
+
+  // ── Heartbeat Cronjob: Tự động kiểm tra & hạ trạng thái Node về OFFLINE nếu không nhận tín hiệu quá 30s ──
+  @Cron(CronExpression.EVERY_10_SECONDS)
+  async handleHeartbeatCheck(): Promise<void> {
+    const TIMEOUT_MS = 30 * 1000;
+    const now = Date.now();
+    try {
+      const onlineNodes = await this.nodeRepo.find({ where: { status: 'online' } });
+      for (const node of onlineNodes) {
+        const lastSeen = node.lastSeenAt ? new Date(node.lastSeenAt).getTime() : 0;
+        if (now - lastSeen > TIMEOUT_MS) {
+          await this.nodeRepo.update(node.id, { status: 'offline' });
+          console.log(
+            `[HeartbeatCron] Sensor Node "${node.id}" không gửi tín hiệu trong 30s (lần cuối: ${node.lastSeenAt ? new Date(node.lastSeenAt).toISOString() : 'chưa gửi'}). Đã chuyển sang OFFLINE.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      console.warn('[HeartbeatCron] Lỗi khi kiểm tra heartbeat Node:', err.message);
     }
   }
 

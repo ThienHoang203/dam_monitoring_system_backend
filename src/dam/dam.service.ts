@@ -99,7 +99,7 @@ export class DamService implements OnModuleInit {
       firmwareVersion: 'v2.1.0',
       description: 'Gateway AI Jetson TX2 tại Trạm Tân Ấp 1',
       stationId: 1,
-      status: 'online',
+      status: 'offline',
     });
     await this.gatewayRepo.save(gw);
 
@@ -124,7 +124,7 @@ export class DamService implements OnModuleInit {
       vibrationThreshold: 15.0,
       gatewayId: 'GTW-ST01-TX2A',
       mappedCameraId: 'CAM-CSI-ST01-01',
-      status: 'online',
+      status: 'offline',
     });
     await this.nodeRepo.save(node);
 

@@ -5,6 +5,7 @@ import {
   ConflictException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -177,6 +178,27 @@ export class GatewayService implements OnModuleInit {
     const gateways = await this.gatewayRepo.find();
     for (const gw of gateways) {
       await this.publishGatewayConfig(gw.id);
+    }
+  }
+
+  // ── Gateway Heartbeat Cronjob ──
+  @Cron(CronExpression.EVERY_10_SECONDS)
+  async handleGatewayHeartbeatCheck(): Promise<void> {
+    const TIMEOUT_MS = 30 * 1000;
+    const now = Date.now();
+    try {
+      const onlineGateways = await this.gatewayRepo.find({ where: { status: 'online' } });
+      for (const gw of onlineGateways) {
+        const lastSeen = gw.lastSeenAt ? new Date(gw.lastSeenAt).getTime() : 0;
+        if (now - lastSeen > TIMEOUT_MS) {
+          await this.gatewayRepo.update(gw.id, { status: 'offline' });
+          console.log(
+            `[HeartbeatCron] Gateway "${gw.id}" không gửi tín hiệu trong 30s (lần cuối: ${gw.lastSeenAt ? new Date(gw.lastSeenAt).toISOString() : 'chưa gửi'}). Đã chuyển sang OFFLINE.`,
+          );
+        }
+      }
+    } catch (err: any) {
+      console.warn('[HeartbeatCron] Lỗi khi kiểm tra heartbeat Gateway:', err.message);
     }
   }
 }

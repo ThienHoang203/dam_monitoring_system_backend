@@ -10,6 +10,7 @@ import {
   BadRequestException,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SensorService } from './sensor.service';
@@ -17,12 +18,9 @@ import { SensorDataDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
 import { AlarmEvent } from './entities/alarm-event.entity';
 import { MessagePattern, Payload, Ctx, MqttContext } from '@nestjs/microservices';
-
-
-import { UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { GatewayApiKeyGuard } from '../auth/guards/gateway-api-key.guard';
+import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../auth/entities/user.entity';
@@ -33,15 +31,8 @@ export class SensorController {
     private readonly sensorService: SensorService,
     private readonly gateway: SensorGateway,
     private readonly configService: ConfigService,
-  ) { }
+  ) {}
 
-  /**
-   * Rewrite imageUrl trong alarm:
-   * 1. Ưu tiên dùng MINIO_PUBLIC_ENDPOINT nếu cấu hình Ngrok riêng cho MinIO.
-   * 2. Nếu không, chuyển sang endpoint proxy /sensor/images/... trên Backend.
-   */
-  // Phát mọi thay đổi trạng thái an toàn Station/Dam (nếu có) được SensorService xếp hàng
-  // sau lần ingest/vibration-status/anomaly/resolve gần nhất.
   private broadcastStatusChanges() {
     const changes = this.sensorService.drainStatusChanges();
     for (const change of changes) {
@@ -53,8 +44,6 @@ export class SensorController {
       this.gateway.broadcastDamMetrics(change);
     }
 
-    // Cảnh báo nước/độ ẩm do backend tự sinh (tạo mới / nâng mức / tự đóng).
-    // Frontend upsert theo id nên bản tin "đã resolve" cũng tự cập nhật danh sách.
     const thresholdAlarms = this.sensorService.drainPendingAlarms();
     for (const alarm of thresholdAlarms) {
       this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
@@ -100,9 +89,10 @@ export class SensorController {
   }
 
   /**
-   * Endpoint Proxy ảnh từ MinIO nội bộ cho trình duyệt ở mọi thiết bị (LAN, Mobile, Ngrok)
+   * Endpoint Proxy ảnh từ MinIO nội bộ cho trình duyệt
    * GET /sensor/images/*
    */
+  @Public()
   @Get('images/*')
   async getProxyImage(@Req() req: any, @Res() res: any) {
     try {
@@ -142,6 +132,12 @@ export class SensorController {
     }
   }
 
+  /**
+   * Endpoint Ingest Dữ liệu Cảm biến từ Thiết bị phần cứng / Edge Gateway
+   * POST /sensor/all
+   */
+  @Public()
+  @UseGuards(GatewayApiKeyGuard)
   @Post('all')
   @HttpCode(200)
   async ingest(@Body() dto: SensorDataDto) {
@@ -157,7 +153,6 @@ export class SensorController {
     const { snapshot, alarms } = await this.sensorService.ingest(dto);
     this.gateway.broadcastUpdate(snapshot);
 
-    // Broadcast từng alarm event mới qua WebSocket
     for (const alarm of alarms) {
       this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
     }
@@ -166,13 +161,6 @@ export class SensorController {
     return { ok: true };
   }
 
-  /**
-   * Topic: telemetry/gateway/{gateway_id}/node/{node_id}/{sensor_type}
-   * Ví dụ:
-   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/vibration
-   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/water_level
-   *   - telemetry/gateway/GTW-ST01-TX2A/node/NOD-ST01-ESP01/moisture
-   */
   @MessagePattern('telemetry/gateway/+/node/+/+')
   async ingestTelemetryPerSensorMqtt(
     @Payload() payload: any,
@@ -184,11 +172,6 @@ export class SensorController {
       const gatewayId = parts[2] || '';
       const nodeId = parts[4] || '';
       const sensorType = parts[5] || '';
-
-      console.log(
-        `[MQTT Telemetry] Nhận [${sensorType}] từ Gateway: ${gatewayId}, Node: ${nodeId}`,
-        payload,
-      );
 
       const { snapshot, alarms } = await this.sensorService.ingestSingleTelemetry(
         gatewayId,
@@ -211,9 +194,6 @@ export class SensorController {
     }
   }
 
-  /**
-   * Topic: telemetry/gateway/{gateway_id}/node/{node_id} (Full node payload)
-   */
   @MessagePattern('telemetry/gateway/+/node/+')
   async ingestTelemetryNodeMqtt(
     @Payload() payload: any,
@@ -224,11 +204,6 @@ export class SensorController {
       const parts = topic.split('/');
       const gatewayId = parts[2] || '';
       const nodeId = parts[4] || '';
-
-      console.log(
-        `[MQTT Telemetry Node] Nhận dữ liệu từ Gateway: ${gatewayId}, Node: ${nodeId}`,
-        payload,
-      );
 
       const { snapshot, alarms } = await this.sensorService.ingestSingleTelemetry(
         gatewayId,
@@ -267,7 +242,6 @@ export class SensorController {
       const { snapshot, alarms } = await this.sensorService.ingest(dto);
       this.gateway.broadcastUpdate(snapshot);
 
-      // Broadcast từng alarm event mới qua WebSocket
       for (const alarm of alarms) {
         this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
       }
@@ -279,11 +253,6 @@ export class SensorController {
     }
   }
 
-  /**
-   * Topic: status/gateway/{gateway_id}/node/{node_id}/vibration
-   * Trạng thái ngưỡng độ rung đã xử lý — gửi cả khi breach=false (NORMAL/WARNING),
-   * dùng cho dashboard vẽ biểu đồ ngưỡng realtime qua WebSocket.
-   */
   @MessagePattern('status/gateway/+/node/+/vibration')
   async ingestVibrationStatusMqtt(
     @Payload() payload: any,
@@ -322,7 +291,7 @@ export class SensorController {
     }
   }
 
-
+  @Public()
   @Get('latest')
   getLatest(
     @Query('stationId') stationId?: string,
@@ -335,7 +304,7 @@ export class SensorController {
     };
   }
 
-  // Lấy lịch sử dữ liệu thực tế từ PostgreSQL / TimescaleDB
+  @Public()
   @Get('history/long-term')
   async getLongTermHistory(
     @Query('type') type?: string,
@@ -358,7 +327,7 @@ export class SensorController {
     return { data };
   }
 
-  // Thống kê KPI thực tế cho trang Lịch sử
+  @Public()
   @Get('history/kpi')
   async getHistoryKpi(
     @Query('damId') damId?: string,
@@ -373,7 +342,7 @@ export class SensorController {
     return { kpi };
   }
 
-  // Lịch sử thay đổi trạng thái an toàn (audit trail) của Station/Dam
+  @Public()
   @Get('status-history')
   async getStatusHistory(
     @Query('stationId') stationId?: string,
@@ -390,14 +359,15 @@ export class SensorController {
     return { history };
   }
 
-  // Lấy danh sách Cán bộ phụ trách quản lý một Đập thủy điện
+  // Lấy danh sách Cán bộ phụ trách quản lý một Đập thủy điện (Chỉ Cán bộ / Admin được truy cập PII)
+  @Roles('ADMIN', 'OPERATOR')
   @Get('dam-managers')
   async getDamManagers(@Query('damId') damId: string) {
     const managers = await this.sensorService.getDamManagers(damId);
     return { managers };
   }
 
-  // Quản lý ngưỡng: Lấy toàn bộ cấu hình ngưỡng của một đập
+  @Public()
   @Get('thresholds')
   async getThresholdConfigs(@Query('damId') damId: string) {
     const targetDamId = damId || 'dam_1';
@@ -405,7 +375,8 @@ export class SensorController {
     return { configs };
   }
 
-  // Quản lý ngưỡng: Cập nhật cấu hình ngưỡng
+  // Cập nhật cấu hình ngưỡng — Yêu cầu quyền ADMIN
+  @Roles('ADMIN')
   @Put('thresholds/:id')
   async updateThresholdConfig(
     @Param('id') id: string,
@@ -415,10 +386,9 @@ export class SensorController {
     return { ok: true, data: updated };
   }
 
-  // ── Alarm Events ─────────────────────────────────────────────────
-  // Lấy danh sách sự kiện cảnh báo (ADMIN thấy tất cả đập, OPERATOR chỉ thấy đập quản lý)
-  @Get('alarms')
+  @Public()
   @UseGuards(OptionalJwtAuthGuard)
+  @Get('alarms')
   async getAlarmEvents(
     @CurrentUser() user: User | null,
     @Query('damId') damId?: string,
@@ -428,7 +398,6 @@ export class SensorController {
   ) {
     let targetDamId = damId;
 
-    // Nếu là OPERATOR: Bắt buộc chỉ lấy cảnh báo của đập được phân công
     if (user && user.role === 'OPERATOR') {
       targetDamId = user.assignedDamId || 'dam_1';
     } else if (damId === 'all' || !damId) {
@@ -447,17 +416,17 @@ export class SensorController {
     return { alarms: alarms.map(a => this.rewriteImageUrl(a)) };
   }
 
-  // Đánh dấu sự kiện cảnh báo đã xử lý
-  @Put('alarms/:id/resolve')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'OPERATOR')
+  @Put('alarms/:id/resolve')
   async resolveAlarmEvent(@Param('id') id: string) {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
     this.broadcastStatusChanges();
     return { ok: true, data: this.rewriteImageUrl(resolved) };
   }
 
-  // Nhận kết quả từ Camera AI và cập nhật báo động
+  // AI crack result callback từ Jetson TX2 Node hardware
+  @Public()
+  @UseGuards(GatewayApiKeyGuard)
   @Put('alarms/:id/ai-result')
   async updateAiResult(
     @Param('id') id: string,
@@ -471,7 +440,8 @@ export class SensorController {
     return { ok: true, data: rewritten };
   }
 
-  // Gửi Email thông báo khẩn cấp từ Admin
+  // Gửi Email thông báo khẩn cấp — Yêu cầu quyền ADMIN hoặc OPERATOR
+  @Roles('ADMIN', 'OPERATOR')
   @Post('send-email-alert')
   async sendEmailAlert(
     @Body() body: { toEmail: string | string[]; subject?: string; message: string; alarmId?: string }
@@ -483,4 +453,3 @@ export class SensorController {
     return result;
   }
 }
-

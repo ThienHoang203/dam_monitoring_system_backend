@@ -13,9 +13,8 @@ import {
 } from '@nestjs/common';
 import { DamService } from './dam.service';
 import { CreateDamDto, UpdateDamDto, CreateStationDto, UpdateStationDto } from './dam.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../auth/entities/user.entity';
@@ -25,6 +24,7 @@ export class DamController {
   constructor(private readonly damService: DamService) {}
 
   // ── Dam Endpoints ──
+  @Public()
   @Get('dams')
   @UseGuards(OptionalJwtAuthGuard)
   async findAllDams(@CurrentUser() user?: User) {
@@ -36,6 +36,7 @@ export class DamController {
     return { dams };
   }
 
+  @Public()
   @Get('dams/:id')
   @UseGuards(OptionalJwtAuthGuard)
   async findDamById(@Param('id') id: string, @CurrentUser() user?: User) {
@@ -48,7 +49,6 @@ export class DamController {
   }
 
   @Post('dams')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async createDam(@Body() dto: CreateDamDto) {
     const dam = await this.damService.createDam(dto);
@@ -56,7 +56,6 @@ export class DamController {
   }
 
   @Put('dams/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async updateDam(@Param('id') id: string, @Body() dto: UpdateDamDto) {
     const dam = await this.damService.updateDam(id, dto);
@@ -64,13 +63,13 @@ export class DamController {
   }
 
   @Delete('dams/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async deleteDam(@Param('id') id: string) {
     return this.damService.deleteDam(id);
   }
 
   // ── Station Endpoints ──
+  @Public()
   @Get('stations')
   @UseGuards(OptionalJwtAuthGuard)
   async findAllStations(@Query('damId') damId?: string, @CurrentUser() user?: User) {
@@ -82,6 +81,7 @@ export class DamController {
     return { stations };
   }
 
+  @Public()
   @Get('stations/:id')
   @UseGuards(OptionalJwtAuthGuard)
   async findStationById(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: User) {
@@ -93,7 +93,6 @@ export class DamController {
   }
 
   @Post('stations')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async createStation(@Body() dto: CreateStationDto) {
     const station = await this.damService.createStation(dto);
@@ -101,7 +100,6 @@ export class DamController {
   }
 
   @Put('stations/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async updateStation(
     @Param('id', ParseIntPipe) id: number,
@@ -112,7 +110,6 @@ export class DamController {
   }
 
   @Delete('stations/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   async deleteStation(@Param('id', ParseIntPipe) id: number) {
     return this.damService.deleteStation(id);

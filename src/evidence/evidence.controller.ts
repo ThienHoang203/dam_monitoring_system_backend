@@ -8,11 +8,15 @@ import {
   UseInterceptors,
   Body,
   BadRequestException,
+  UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import { EvidenceService } from './evidence.service';
 import { SensorGateway } from '../gateway/sensor.gateway';
+import { Public } from '../auth/decorators/public.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { GatewayApiKeyGuard } from '../auth/guards/gateway-api-key.guard';
 
 @Controller('api/evidence')
 export class EvidenceController {
@@ -24,16 +28,10 @@ export class EvidenceController {
 
   /**
    * POST /api/evidence/upload
-   * Multipart form data from Jetson TX2:
-   *   - file: image/jpeg
-   *   - gateway_id: string
-   *   - event_id?: string
-   *   - node_id?: string
-   *   - confidence: string (parsed to float)
-   *   - threshold_val?: string (parsed to float)
-   *   - measured_val?: string (parsed to float)
-   *   - timestamp: ISO string
+   * Multipart form data từ Jetson TX2 / Edge Node
    */
+  @Public()
+  @UseGuards(GatewayApiKeyGuard)
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
   async upload(
@@ -50,6 +48,18 @@ export class EvidenceController {
     if (!file) {
       throw new BadRequestException('Thiếu file ảnh evidence.');
     }
+
+    // Giới hạn kích thước file (tối đa 10MB)
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (file.buffer && file.buffer.length > MAX_FILE_SIZE) {
+      throw new BadRequestException('Dung lượng file tải lên vượt quá giới hạn 10MB.');
+    }
+
+    // Kiểm tra định dạng MIME (Chỉ chấp nhận file ảnh)
+    if (file.mimetype && !file.mimetype.startsWith('image/')) {
+      throw new BadRequestException('Định dạng file không hợp lệ. Chỉ chấp nhận file hình ảnh.');
+    }
+
     if (!gatewayId) {
       throw new BadRequestException('Thiếu gateway_id.');
     }
@@ -67,7 +77,6 @@ export class EvidenceController {
       );
 
     if (updatedAlarm) {
-      // Rewrite MinIO URL to backend proxy URL (/sensor/images/...) for Frontend
       let proxyImageUrl = updatedAlarm.imageUrl;
       if (proxyImageUrl && proxyImageUrl.includes('/dam-images/')) {
         const parts = proxyImageUrl.split('/dam-images/');
@@ -84,6 +93,7 @@ export class EvidenceController {
   }
 
   @Get()
+  @Roles('ADMIN', 'OPERATOR')
   async findAll(
     @Query('gatewayId') gatewayId?: string,
     @Query('limit') limit?: string,
@@ -94,6 +104,7 @@ export class EvidenceController {
   }
 
   @Get(':id')
+  @Roles('ADMIN', 'OPERATOR')
   async findById(@Param('id') id: string) {
     const evidence = await this.evidenceService.findById(id);
     return { evidence };

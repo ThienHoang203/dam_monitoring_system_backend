@@ -3,20 +3,15 @@ import {
   Post,
   Get,
   Put,
-  Delete,
   Body,
-  Param,
-  UseGuards,
   Res,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto, UpdateProfileDto } from './auth.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { RolesGuard } from './guards/roles.guard';
-import { Roles } from './decorators/roles.decorator';
+import { RegisterDto, LoginDto, UpdateProfileDto } from './auth.dto';
+import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { User } from './entities/user.entity';
 
@@ -24,11 +19,13 @@ import { User } from './entities/user.entity';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('register')
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
+  @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
@@ -45,6 +42,7 @@ export class AuthController {
     return data;
   }
 
+  @Public()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Res({ passthrough: true }) res: Response) {
@@ -53,15 +51,11 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(JwtAuthGuard)
   async getMe(@CurrentUser() user: User) {
     return this.authService.getProfile(user.id);
   }
 
-  // Tự cập nhật hồ sơ cá nhân (họ tên / SĐT / mật khẩu) — mọi role đã đăng nhập,
-  // chỉ tác động tới chính tài khoản mình (không có role/status/assignedDamId ở đây).
   @Put('me')
-  @UseGuards(JwtAuthGuard)
   async updateMe(@CurrentUser() user: User, @Body() dto: UpdateProfileDto) {
     const updated = await this.authService.updateProfile(user.id, dto);
     return { ok: true, user: updated };

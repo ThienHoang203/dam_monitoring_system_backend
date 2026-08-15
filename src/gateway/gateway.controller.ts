@@ -8,9 +8,13 @@ import {
   Param,
   Query,
   Headers,
+  UseGuards,
 } from '@nestjs/common';
 import { GatewayService } from './gateway.service';
 import { CreateGatewayDto, UpdateGatewayDto } from './gateway.dto';
+import { Public } from '../auth/decorators/public.decorator';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { GatewayApiKeyGuard } from '../auth/guards/gateway-api-key.guard';
 
 @Controller()
 export class GatewayController {
@@ -19,6 +23,7 @@ export class GatewayController {
   // ── CRUD Endpoints (plural: /api/gateways) ──
 
   @Get('api/gateways')
+  @Roles('ADMIN', 'OPERATOR')
   async findAll(@Query('stationId') stationId?: string) {
     const stId = stationId ? parseInt(stationId, 10) : undefined;
     const gateways = await this.gatewayService.findAll(stId);
@@ -26,31 +31,36 @@ export class GatewayController {
   }
 
   @Get('api/gateways/:id')
+  @Roles('ADMIN', 'OPERATOR')
   async findById(@Param('id') id: string) {
     const gateway = await this.gatewayService.findById(id);
     return { gateway };
   }
 
   @Post('api/gateways')
+  @Roles('ADMIN')
   async create(@Body() dto: CreateGatewayDto) {
     const gateway = await this.gatewayService.create(dto);
     return { ok: true, gateway };
   }
 
   @Put('api/gateways/:id')
+  @Roles('ADMIN')
   async update(@Param('id') id: string, @Body() dto: UpdateGatewayDto) {
     const gateway = await this.gatewayService.update(id, dto);
     return { ok: true, gateway };
   }
 
   @Delete('api/gateways/:id')
+  @Roles('ADMIN')
   async delete(@Param('id') id: string) {
     return this.gatewayService.delete(id);
   }
 
   // ── Config Sync Endpoint (singular: /api/gateway/:id/config) ──
-  // This is the endpoint the Jetson TX2 calls on startup and periodically.
-  // Path uses singular "gateway" to match the Jetson's fetch_initial_config() URL.
+  // Endpoint Jetson TX2 gọi khi khởi động để lấy cấu hình
+  @Public()
+  @UseGuards(GatewayApiKeyGuard)
   @Get('api/gateway/:id/config')
   async getConfig(
     @Param('id') id: string,

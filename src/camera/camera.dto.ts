@@ -1,15 +1,41 @@
+import { IsOptional, IsString } from 'class-validator';
+
 export class CreateCameraDto {
-  id: string; // Must match ^CAM-(CSI|IP)-[A-Z0-9]+-[A-Z0-9]+$
-  cameraType: string; // 'CSI' | 'IP'
+  @IsString()
+  id: string;
+
+  @IsString()
+  cameraType: string;
+
+  @IsString()
   name: string;
-  streamUrl?: string; // Required if cameraType = 'IP'
+
+  @IsOptional()
+  @IsString()
+  streamUrl?: string;
+
+  @IsOptional()
+  @IsString()
   resolution?: string;
+
+  @IsString()
   gatewayId: string;
 }
 
 export class UpdateCameraDto {
+  @IsOptional()
+  @IsString()
   name?: string;
+
+  @IsOptional()
+  @IsString()
   streamUrl?: string;
+
+  @IsOptional()
+  @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsString()
   resolution?: string;
 }

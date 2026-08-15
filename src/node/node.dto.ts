@@ -1,52 +1,170 @@
+import { IsNumber, IsOptional, IsString } from 'class-validator';
+
 export class CreateNodeDto {
-  id?: string; // e.g. NOD-ST01-ESP01
+  @IsOptional()
+  @IsString()
+  id?: string;
+
+  @IsString()
   name: string;
+
+  @IsOptional()
+  @IsString()
   macAddress?: string;
+
+  @IsOptional()
+  @IsString()
   espMacAddress?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
   firmwareVersion?: string;
+
+  @IsOptional()
+  @IsString()
   installLocation?: string;
-  vibrationThreshold?: number; // alert_high
+
+  @IsOptional()
+  @IsNumber()
+  vibrationThreshold?: number;
+
+  @IsOptional()
+  @IsNumber()
   warnHigh?: number;
+
+  @IsOptional()
+  @IsNumber()
   criticalHigh?: number;
+
+  @IsOptional()
+  @IsNumber()
   alertMinCount?: number;
+
+  @IsOptional()
+  @IsNumber()
   alertMinDurationSec?: number;
+
+  @IsOptional()
+  @IsNumber()
   episodeResetGapSec?: number;
+
+  @IsOptional()
+  @IsString()
   gatewayId?: string;
+
+  @IsOptional()
+  @IsNumber()
   stationId?: number;
+
+  @IsOptional()
+  @IsString()
   mappedCameraId?: string;
 }
 
 export class UpdateNodeDto {
+  @IsOptional()
+  @IsString()
   name?: string;
+
+  @IsOptional()
+  @IsString()
   macAddress?: string;
+
+  @IsOptional()
+  @IsString()
   espMacAddress?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
   firmwareVersion?: string;
+
+  @IsOptional()
+  @IsString()
   installLocation?: string;
+
+  @IsOptional()
+  @IsString()
   status?: string;
-  vibrationThreshold?: number; // alert_high
+
+  @IsOptional()
+  @IsNumber()
+  vibrationThreshold?: number;
+
+  @IsOptional()
+  @IsNumber()
   warnHigh?: number;
+
+  @IsOptional()
+  @IsNumber()
   criticalHigh?: number;
+
+  @IsOptional()
+  @IsNumber()
   alertMinCount?: number;
+
+  @IsOptional()
+  @IsNumber()
   alertMinDurationSec?: number;
+
+  @IsOptional()
+  @IsNumber()
   episodeResetGapSec?: number;
+
+  @IsOptional()
+  @IsString()
   gatewayId?: string;
+
+  @IsOptional()
+  @IsNumber()
   stationId?: number;
+
+  @IsOptional()
+  @IsString()
   mappedCameraId?: string;
 }
 
 export class CreateSensorDto {
-  id: string; // Must match ^SNR-(VIB|TLT|WTL|MST|US)-[A-Z0-9]+-[A-Z0-9]+$
-  sensorType: string; // VIB | TLT | WTL | MST | US
+  @IsString()
+  id: string;
+
+  @IsString()
+  sensorType: string;
+
+  @IsOptional()
+  @IsString()
   model?: string;
+
+  @IsOptional()
+  @IsString()
   unit?: string;
+
+  @IsOptional()
+  @IsNumber()
   calibrationOffset?: number;
 }
 
 export class UpdateSensorDto {
+  @IsOptional()
+  @IsString()
   model?: string;
+
+  @IsOptional()
+  @IsString()
   unit?: string;
+
+  @IsOptional()
+  @IsString()
   status?: string;
+
+  @IsOptional()
+  @IsNumber()
   calibrationOffset?: number;
 }

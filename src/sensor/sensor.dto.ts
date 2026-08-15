@@ -1,11 +1,32 @@
+import { IsNumber, IsOptional, IsString } from 'class-validator';
+
 export class SensorDataDto {
+  @IsOptional()
+  @IsString()
   clusterId?: string;  // ID cụm cảm biến (backward compatible, fallback 'sensor_node_1')
+
+  @IsOptional()
+  @IsNumber()
   stationId?: number;  // ID trạm liên kết với cụm cảm biến
+
+  @IsOptional()
+  @IsString()
   damId?: string;      // ID đập (backward compatible, fallback 'dam_1')
+
+  @IsNumber()
   freq: number;
+
+  @IsNumber()
   amp: number;
+
+  @IsNumber()
   waterLevel: number;
+
+  @IsNumber()
   moisture: number;
+
+  @IsOptional()
+  @IsNumber()
   percent?: number;
 
   constructor(
@@ -44,20 +65,18 @@ export interface SensorHistory {
   percent: number[];
 }
 
-// Phát khi trạng thái an toàn tổng hợp của Station/Dam thay đổi (xem SensorService.recomputeStationStatus).
 export interface StationStatusChangeEvent {
   level: 'station' | 'dam';
   stationId?: number;
   damId: string;
   status: string; // 'safe' | 'warning' | 'danger' | 'critical' | 'unknown'
-  severity: number; // Severity enum value; -1 khi status = 'unknown' (không có tín hiệu nào còn tươi)
+  severity: number;
   timestamp: string;
 }
 
-// Phát khi một chỉ số tổng hợp cấp Dam thay đổi (xem SensorService.recomputeDamWaterLevel).
 export interface DamMetricChangeEvent {
   damId: string;
-  waterLevel: number; // MAX(waterLevel) trong các Station thuộc Dam
-  fillPct: number;    // (waterLevel / tankHeight) * 100, kẹp 0-100
+  waterLevel: number;
+  fillPct: number;
   timestamp: string;
 }

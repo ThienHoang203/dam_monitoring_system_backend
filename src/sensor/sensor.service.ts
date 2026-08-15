@@ -550,6 +550,27 @@ export class SensorService implements OnModuleInit {
     await this.thresholdConfigRepo.update(id, update);
     const updated = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
 
+    // Đồng bộ ngưỡng độ rung của Đập/Trạm sang các Node Jetson TX2 thuộc Đập/Trạm này
+    if (updated.sensorType === 'vibration') {
+      try {
+        const nodes = await this.nodeRepo.createQueryBuilder('node')
+          .leftJoinAndSelect('node.gateway', 'gateway')
+          .leftJoinAndSelect('gateway.station', 'station')
+          .where('station.damId = :damId', { damId: updated.damId })
+          .getMany();
+
+        for (const node of nodes) {
+          node.warnHigh = updated.warnHigh;
+          node.vibrationThreshold = updated.alertHigh;
+          node.criticalHigh = updated.criticalHigh;
+          await this.nodeRepo.save(node);
+        }
+        console.log(`[SensorService] Backend đã đồng bộ ngưỡng độ rung (${updated.warnHigh} / ${updated.alertHigh} / ${updated.criticalHigh}) sang ${nodes.length} Sensor Node(s) Jetson TX2 thuộc Đập ${updated.damId}`);
+      } catch (e: any) {
+        console.warn('[SensorService] Lỗi đồng bộ ngưỡng độ rung xuống Node:', e.message);
+      }
+    }
+
     this.thresholdConfigCache.delete(updated.damId);
     const configs = await this.thresholdConfigRepo.find({ where: { damId: updated.damId } });
     this.thresholdConfigCache.set(updated.damId, configs);

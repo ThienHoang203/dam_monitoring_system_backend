@@ -52,6 +52,13 @@ export class SensorController {
     for (const change of metricChanges) {
       this.gateway.broadcastDamMetrics(change);
     }
+
+    // Cảnh báo nước/độ ẩm do backend tự sinh (tạo mới / nâng mức / tự đóng).
+    // Frontend upsert theo id nên bản tin "đã resolve" cũng tự cập nhật danh sách.
+    const thresholdAlarms = this.sensorService.drainPendingAlarms();
+    for (const alarm of thresholdAlarms) {
+      this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
+    }
   }
 
   private rewriteImageUrl(alarm: AlarmEvent): AlarmEvent {

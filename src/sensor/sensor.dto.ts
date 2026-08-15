@@ -58,5 +58,6 @@ export interface StationStatusChangeEvent {
 export interface DamMetricChangeEvent {
   damId: string;
   waterLevel: number; // MAX(waterLevel) trong các Station thuộc Dam
+  fillPct: number;    // (waterLevel / tankHeight) * 100, kẹp 0-100
   timestamp: string;
 }

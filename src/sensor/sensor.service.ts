@@ -24,6 +24,12 @@ const DEFAULT_DAM_ID = 'dam_1';
 // Sau chừng này ms không nhận tin phân loại rung động mới từ Jetson TX2, coi tín hiệu đó là cũ (STALE)
 // và không tính vào worst-case của Station nữa — tránh "đóng băng" severity khi Jetson mất kết nối.
 const VIBRATION_SIGNAL_TTL_MS = 30_000;
+// Mực nước/độ ẩm phải vượt ngưỡng LIÊN TỤC chừng này ms mới sinh AlarmEvent.
+// Telemetry về ~1 lần/giây nên nếu tạo ngay khi chạm ngưỡng sẽ sinh hàng loạt cảnh báo rác
+// mỗi khi giá trị dao động quanh biên.
+const THRESHOLD_ALARM_SUSTAIN_MS = 30_000;
+// Các loại cảm biến do BACKEND tự so ngưỡng và tự sinh cảnh báo (rung động thuộc về Jetson TX2).
+const BACKEND_ALARM_SENSOR_TYPES = ['water_level', 'humidity'] as const;
 
 @Injectable()
 export class SensorService implements OnModuleInit {
@@ -65,6 +71,14 @@ export class SensorService implements OnModuleInit {
   private damWaterLevelCache: Map<string, number> = new Map();
   private pendingDamMetricChanges: DamMetricChangeEvent[] = [];
 
+  // ── Cảnh báo ngưỡng do backend sinh (nước/độ ẩm) — khoá `${stationId}:${sensorType}` ──
+  // Mức đang chờ đủ THRESHOLD_ALARM_SUSTAIN_MS trước khi được coi là sự cố thật.
+  private pendingBreach: Map<string, { severity: Severity; since: number }> = new Map();
+  // AlarmEvent đang mở cho từng (trạm, loại cảm biến) — tránh query DB mỗi giây.
+  private openThresholdAlarm: Map<string, { id: string; severity: Severity }> = new Map();
+  // Hàng đợi AlarmEvent vừa tạo/cập nhật/đóng để Controller broadcast qua WebSocket.
+  private pendingAlarms: AlarmEvent[] = [];
+
   private history: SensorHistory = {
     timestamps: [],
     freq: [],
@@ -105,47 +119,75 @@ export class SensorService implements OnModuleInit {
   // Khởi tạo ngưỡng mặc định & nạp cache khi khởi động ứng dụng
   async onModuleInit() {
     console.log('[SensorService] Đang kiểm tra cấu hình ngưỡng mặc định...');
-    const types = ['vibration', 'water_level', 'humidity'];
 
-    for (const type of types) {
-      const exists = await this.thresholdConfigRepo.findOne({
-        where: { damId: DEFAULT_DAM_ID, sensorType: type },
-      });
-
-      if (!exists) {
-        const config = new ThresholdConfig();
-        config.damId = DEFAULT_DAM_ID;
-        config.sensorType = type;
-
-        if (type === 'vibration') {
-          config.warnLow = 0;
-          config.warnHigh = 2.5;
-          config.alertLow = 2.5;
-          config.alertHigh = 15.0;
-          config.criticalHigh = 25.0;
-          config.sustainedSeconds = 3;
-        } else if (type === 'water_level') {
-          config.warnLow = 0;
-          config.warnHigh = 42.5; // 85%
-          config.alertLow = 42.5;
-          config.alertHigh = 50.0; // 100%
-          config.criticalHigh = 55.0;
-          config.tankHeight = 50.0;
-        } else { // humidity
-          config.warnLow = 0;
-          config.warnHigh = 75.0;
-          config.alertLow = 75.0;
-          config.alertHigh = 85.0;
-          config.criticalHigh = 95.0;
-        }
-
-        await this.thresholdConfigRepo.save(config);
-        console.log(`[SensorService] Đã tạo cấu hình ngưỡng mặc định cho cảm biến: ${type}`);
-      }
+    // Backfill cho MỌI đập đang có, không chỉ đập mặc định — đập tạo qua UI trước đây
+    // không hề có ThresholdConfig nào, khiến nước/độ ẩm không bao giờ cảnh báo
+    // và form sửa ngưỡng lưu không ăn (không có bản ghi để update).
+    const dams = await this.damRepo.find();
+    const damIds = dams.length > 0 ? dams.map(d => d.id) : [DEFAULT_DAM_ID];
+    for (const damId of damIds) {
+      await this.ensureThresholdConfigs(damId);
     }
 
     // Warm-up cache bộ nhớ cho ThresholdConfigs và Mappings
     await this.preloadCache();
+  }
+
+  /**
+   * Đảm bảo một Đập luôn có đủ bộ ThresholdConfig (vibration / water_level / humidity).
+   * Idempotent — chỉ tạo loại nào còn thiếu. Gọi khi khởi động (backfill) và khi tạo Đập mới,
+   * để không bao giờ tồn tại Đập "không có ngưỡng" (sẽ không cảnh báo được nước/độ ẩm).
+   */
+  async ensureThresholdConfigs(damId: string): Promise<void> {
+    const types = ['vibration', 'water_level', 'humidity'];
+
+    for (const type of types) {
+      const exists = await this.thresholdConfigRepo.findOne({
+        where: { damId, sensorType: type },
+      });
+      if (exists) continue;
+
+      const config = new ThresholdConfig();
+      config.damId = damId;
+      config.sensorType = type;
+
+      if (type === 'vibration') {
+        config.warnLow = 0;
+        config.warnHigh = 2.5;
+        config.alertLow = 2.5;
+        config.alertHigh = 15.0;
+        config.criticalHigh = 25.0;
+        config.sustainedSeconds = 3;
+      } else if (type === 'water_level') {
+        config.warnLow = 0;
+        config.warnHigh = 42.5; // 85%
+        config.alertLow = 42.5;
+        config.alertHigh = 50.0; // 100%
+        config.criticalHigh = 55.0;
+        config.tankHeight = 50.0;
+      } else { // humidity
+        config.warnLow = 0;
+        config.warnHigh = 75.0;
+        config.alertLow = 75.0;
+        config.alertHigh = 85.0;
+        config.criticalHigh = 95.0;
+      }
+
+      await this.thresholdConfigRepo.save(config);
+      console.log(`[SensorService] Đã tạo ngưỡng mặc định [${type}] cho Đập ${damId}`);
+    }
+
+    // Cache có thể đang giữ mảng rỗng cho đập này — nạp lại để ingest/recompute dùng ngay.
+    this.thresholdConfigCache.set(
+      damId,
+      await this.thresholdConfigRepo.find({ where: { damId } }),
+    );
+  }
+
+  /** Xoá ngưỡng của một Đập khi Đập bị xoá (ThresholdConfig không có FK nên không tự cascade). */
+  async deleteThresholdConfigsByDam(damId: string): Promise<void> {
+    await this.thresholdConfigRepo.delete({ damId });
+    this.thresholdConfigCache.delete(damId);
   }
 
   private async preloadCache() {
@@ -161,14 +203,20 @@ export class SensorService implements OnModuleInit {
 
       const knownStationIds = await this.syncTopologyFromDb();
 
-      // Nạp lại severity của các AlarmEvent (do Jetson TX2 phát hiện) còn chưa resolve,
-      // để trạng thái không bị "quên" khi backend khởi động lại giữa lúc có sự cố đang diễn ra.
+      // Nạp lại các AlarmEvent còn chưa resolve để không "quên" sự cố đang diễn ra khi restart.
       const openAlarms = await this.alarmEventRepo.find({ where: { resolvedAt: IsNull() } });
       for (const alarm of openAlarms) {
         if (!alarm.stationId) continue;
         const sev = severityFromString(alarm.severity);
-        const current = this.openAlarmSeverityByStation.get(alarm.stationId) ?? Severity.NORMAL;
-        if (sev > current) this.openAlarmSeverityByStation.set(alarm.stationId, sev);
+
+        if (alarm.sensorType === 'vibration') {
+          // Chỉ alarm của Jetson mới đẩy vào severity tổng hợp của trạm (xem refreshOpenAlarmSeverity).
+          const current = this.openAlarmSeverityByStation.get(alarm.stationId) ?? Severity.NORMAL;
+          if (sev > current) this.openAlarmSeverityByStation.set(alarm.stationId, sev);
+        } else if ((BACKEND_ALARM_SENSOR_TYPES as readonly string[]).includes(alarm.sensorType)) {
+          // Khôi phục alarm ngưỡng đang mở để sau restart không tạo bản ghi trùng cho cùng đợt sự cố.
+          this.openThresholdAlarm.set(`${alarm.stationId}:${alarm.sensorType}`, { id: alarm.id, severity: sev });
+        }
         knownStationIds.add(alarm.stationId);
       }
 
@@ -297,8 +345,10 @@ export class SensorService implements OnModuleInit {
     const freshSeverities: Severity[] = [];
     if (snapshot) {
       // Nước/độ ẩm: backend tự tính trực tiếp từ lần ingest gần nhất, luôn coi là tươi.
-      freshSeverities.push(classifySeverity(snapshot.waterLevel, waterConfig));
-      freshSeverities.push(classifySeverity(snapshot.moisture, humidityConfig));
+      // Chỉ tính khi CÓ cấu hình ngưỡng — thiếu ngưỡng thì không có cơ sở để kết luận,
+      // im lặng coi là NORMAL sẽ che mất việc đập chưa được cấu hình (báo "an toàn" giả).
+      if (waterConfig) freshSeverities.push(classifySeverity(snapshot.waterLevel, waterConfig));
+      if (humidityConfig) freshSeverities.push(classifySeverity(snapshot.moisture, humidityConfig));
     }
 
     const nodeIds = this.nodeIdsByStation.get(stationId);
@@ -412,14 +462,130 @@ export class SensorService implements OnModuleInit {
 
   // Tính lại severity cao nhất trong các AlarmEvent chưa resolve của một Station.
   private async refreshOpenAlarmSeverity(stationId: number): Promise<void> {
+    // CHỈ tính alarm rung động/vết nứt của Jetson. Alarm nước/độ ẩm do backend sinh KHÔNG được
+    // đẩy vào đây: severity của chúng đã tính trực tiếp từ giá trị sống, nếu cộng thêm vào thì
+    // trạm sẽ kẹt ở mức nguy cấp ngay cả sau khi nước đã rút.
     const openAlarms = await this.alarmEventRepo.find({
-      where: { stationId, resolvedAt: IsNull() },
+      where: { stationId, resolvedAt: IsNull(), sensorType: 'vibration' },
     });
     let worst = Severity.NORMAL;
     for (const a of openAlarms) worst = Math.max(worst, severityFromString(a.severity));
 
     if (worst === Severity.NORMAL) this.openAlarmSeverityByStation.delete(stationId);
     else this.openAlarmSeverityByStation.set(stationId, worst);
+  }
+
+  /**
+   * Sinh/cập nhật/đóng AlarmEvent cho mực nước & độ ẩm dựa trên ThresholdConfig của Đập.
+   *
+   * Cố ý tách khỏi recomputeStationStatus và gọi SAU nó (fire-and-forget) để tránh đệ quy:
+   * alarm mở lại ảnh hưởng ngược tới severity của trạm.
+   *
+   * Chống nhiễu: một mức severity phải giữ nguyên liên tục THRESHOLD_ALARM_SUSTAIN_MS mới được
+   * ghi nhận. Mỗi (trạm, loại cảm biến) chỉ có tối đa MỘT alarm mở cho một "đợt" sự cố —
+   * lên/xuống mức thì cập nhật tại chỗ, về NORMAL thì tự đóng.
+   */
+  private async evaluateThresholdAlarms(
+    stationId: number,
+    damId: string,
+    snapshot: SensorSnapshot,
+    configs: ThresholdConfig[],
+  ): Promise<void> {
+    const now = Date.now();
+
+    for (const sensorType of BACKEND_ALARM_SENSOR_TYPES) {
+      const config = configs.find(c => c.sensorType === sensorType);
+      if (!config) continue; // Đập chưa cấu hình ngưỡng loại này -> không có cơ sở để cảnh báo
+
+      const value = sensorType === 'water_level' ? snapshot.waterLevel : snapshot.moisture;
+      if (value == null || isNaN(value)) continue;
+
+      const severity = classifySeverity(value, config);
+      const key = `${stationId}:${sensorType}`;
+
+      // 1. Mức vừa đổi -> khởi động lại đồng hồ chờ (escalation cũng phải chờ đủ thời gian).
+      const pending = this.pendingBreach.get(key);
+      if (!pending || pending.severity !== severity) {
+        this.pendingBreach.set(key, { severity, since: now });
+        continue;
+      }
+
+      // 2. Chưa giữ đủ lâu -> chưa coi là sự cố thật.
+      if (now - pending.since < THRESHOLD_ALARM_SUSTAIN_MS) continue;
+
+      // 3. Đã ổn định đủ lâu.
+      const open = this.openThresholdAlarm.get(key);
+
+      if (severity === Severity.NORMAL) {
+        if (open) {
+          await this.alarmEventRepo.update(open.id, { resolvedAt: new Date() });
+          this.openThresholdAlarm.delete(key);
+          const resolved = await this.alarmEventRepo.findOne({ where: { id: open.id } });
+          if (resolved) this.pendingAlarms.push(resolved);
+          console.log(`[SensorService] Tự đóng cảnh báo [${sensorType}] Trạm ${stationId} — giá trị đã về bình thường (${value})`);
+        }
+        continue;
+      }
+
+      if (open && open.severity === severity) continue; // Không đổi -> không ghi DB lặp lại
+
+      const thresholdVal =
+        severity === Severity.CRITICAL ? config.criticalHigh
+          : severity === Severity.ALERT ? config.alertHigh
+            : config.warnHigh;
+      const severityLabel = Severity[severity];
+      const unit = sensorType === 'water_level' ? 'm' : '%';
+
+      if (open) {
+        // Cùng một đợt sự cố, chỉ đổi mức -> cập nhật tại chỗ, không sinh bản ghi mới.
+        await this.alarmEventRepo.update(open.id, {
+          severity: severityLabel,
+          measuredVal: value,
+          thresholdVal,
+          notes: `Backend tự phát hiện vượt ngưỡng [${sensorType}]: ${value}${unit} (ngưỡng ${thresholdVal}${unit}). Mức cảnh báo đổi ${Severity[open.severity]} -> ${severityLabel}.`,
+        });
+        this.openThresholdAlarm.set(key, { id: open.id, severity });
+        const updated = await this.alarmEventRepo.findOne({ where: { id: open.id } });
+        if (updated) this.pendingAlarms.push(updated);
+        console.log(`[SensorService] Nâng mức cảnh báo [${sensorType}] Trạm ${stationId}: ${Severity[open.severity]} -> ${severityLabel}`);
+        continue;
+      }
+
+      // Chưa có alarm mở -> tạo mới cho đợt sự cố này.
+      const station = await this.stationRepo.findOne({
+        where: { id: stationId },
+        relations: { dam: true },
+      });
+
+      const event = new AlarmEvent();
+      event.damId = damId;
+      event.sensorId = snapshot.clusterId || `station_${stationId}`;
+      event.sensorType = sensorType;
+      event.severity = severityLabel;
+      event.thresholdVal = thresholdVal;
+      event.measuredVal = value;
+      event.cameraActivated = false;
+      event.stationId = stationId;
+      if (station) {
+        event.stationName = station.name;
+        event.damName = station.dam?.name || `Đập ${damId}`;
+        event.location = station.location || station.km || '';
+      }
+      event.notes = `Backend tự phát hiện vượt ngưỡng [${sensorType}]: ${value}${unit} (ngưỡng ${thresholdVal}${unit}), duy trì liên tục ${THRESHOLD_ALARM_SUSTAIN_MS / 1000}s.`;
+
+      const saved = await this.alarmEventRepo.save(event);
+      this.openThresholdAlarm.set(key, { id: saved.id, severity });
+      this.pendingAlarms.push(saved);
+      console.log(`[SensorService] Tạo cảnh báo [${sensorType}] ${severityLabel} — Trạm ${stationId}: ${value}${unit} vượt ngưỡng ${thresholdVal}${unit}`);
+    }
+  }
+
+  // Lấy & xoá hàng đợi AlarmEvent do backend sinh để Controller broadcast qua WebSocket.
+  drainPendingAlarms(): AlarmEvent[] {
+    if (this.pendingAlarms.length === 0) return [];
+    const out = this.pendingAlarms;
+    this.pendingAlarms = [];
+    return out;
   }
 
   // Lấy & xoá hàng đợi các thay đổi trạng thái Station/Dam để Controller broadcast qua WebSocket.
@@ -450,12 +616,23 @@ export class SensorService implements OnModuleInit {
     const prevLevel = this.damWaterLevelCache.get(damId);
     if (prevLevel != null && Math.abs(prevLevel - maxLevel) < 0.001) return;
 
+    // Mức chứa (%) suy ra từ mực nước — cùng công thức & cùng tankHeight mà ingest() dùng
+    // để tính `percent` cho snapshot, đảm bảo cấp Trạm và cấp Đập không lệch nhau.
+    let configs = this.thresholdConfigCache.get(damId);
+    if (!configs) {
+      configs = await this.thresholdConfigRepo.find({ where: { damId } });
+      this.thresholdConfigCache.set(damId, configs);
+    }
+    const tankHeight = configs.find(c => c.sensorType === 'water_level')?.tankHeight || 50.0;
+    const fillPct = +Math.min(100, Math.max(0, (maxLevel / tankHeight) * 100)).toFixed(1);
+
     this.damWaterLevelCache.set(damId, maxLevel);
-    await this.damRepo.update(damId, { waterLevel: maxLevel }).catch(() => { });
+    await this.damRepo.update(damId, { waterLevel: maxLevel, fillPct }).catch(() => { });
 
     this.pendingDamMetricChanges.push({
       damId,
       waterLevel: maxLevel,
+      fillPct,
       timestamp: new Date().toISOString(),
     });
   }
@@ -524,7 +701,13 @@ export class SensorService implements OnModuleInit {
     return fallback;
   }
 
-  async ingest(dto: SensorDataDto): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
+  /**
+   * @param freshTypes Danh sách sensorType VỪA THỰC SỰ nhận được trong lần gọi này. Bỏ trống =
+   * ghi cả 4 loại (dùng cho payload tổng: POST /sensor/all, MQTT dam/sensor/all).
+   * MQTT gửi mỗi loại trên một topic riêng nên nếu lần nào cũng ghi đủ 4, ~3/4 số dòng chỉ là
+   * bản sao của giá trị cũ — vừa phình bảng vừa gây trùng khoá (time, sensorId, sensorType).
+   */
+  async ingest(dto: SensorDataDto, freshTypes?: string[]): Promise<{ snapshot: SensorSnapshot; alarms: AlarmEvent[] }> {
     const timestamp = new Date();
     let damId = dto.damId || DEFAULT_DAM_ID;
     const sensorId = dto.clusterId || 'sensor_node_1';
@@ -538,15 +721,8 @@ export class SensorService implements OnModuleInit {
         damId = cached.damId;
       }
 
-      // Cập nhật online status & thông số Trạm bất đồng bộ (không block WebSocket)
+      // Cập nhật online status bất đồng bộ (không block WebSocket)
       this.nodeRepo.update(dto.clusterId, { status: 'online', lastSeenAt: timestamp }).catch(() => {});
-      if (stationId) {
-        this.stationRepo.update(stationId, {
-          waterLevel: +dto.waterLevel,
-          humidity: +dto.moisture,
-          bd3: +dto.amp,
-        }).catch(() => {});
-      }
     }
 
     // Fallback stationId nếu chưa có
@@ -591,24 +767,41 @@ export class SensorService implements OnModuleInit {
     }
     this.pushHistory(snapshot);
 
-    // So ngưỡng nước/độ ẩm & tổng hợp trạng thái Station/Dam — bất đồng bộ, không block WebSocket.
-    if (stationId) {
-      this.recomputeStationStatus(stationId).catch(() => { });
-      this.recomputeDamWaterLevel(damId).catch(() => { });
-    }
+    // Ghi số đo mới nhất của Trạm xuống DB — bất đồng bộ, không block WebSocket.
+    // Đặt sau pushHistory() để tính được biến thiên mực nước từ buffer lịch sử vừa cập nhật.
+    // Chạy vô điều kiện (kể cả request không kèm clusterId, chỉ có stationId).
+    const waterChange = this.calcWaterLevelChange(stationId);
+    this.stationRepo.update(stationId, {
+      waterLevel: +dto.waterLevel,
+      humidity: +dto.moisture,
+      vibration: +dto.amp,
+      ...(waterChange != null ? { change: waterChange } : {}),
+    }).catch(() => { });
 
-    // 2. Gom nhóm dữ liệu ghi vào database qua buffer (TimescaleDB)
-    const readingsToInsert: SensorReading[] = [
-      this.createReading(timestamp, sensorId, 'vibration_freq', dto.freq, 'Hz', damId),
-      this.createReading(timestamp, sensorId, 'vibration_amp', dto.amp, 'mm/s', damId),
-      this.createReading(timestamp, sensorId, 'water_level', dto.waterLevel, 'cm', damId),
-      this.createReading(timestamp, sensorId, 'moisture', dto.moisture, '%', damId),
+    // So ngưỡng nước/độ ẩm & tổng hợp trạng thái Station/Dam — bất đồng bộ, không block WebSocket.
+    this.recomputeStationStatus(stationId).catch(() => { });
+    this.recomputeDamWaterLevel(damId).catch(() => { });
+    // Sinh cảnh báo nước/độ ẩm — gọi SAU recomputeStationStatus để tránh đệ quy severity.
+    this.evaluateThresholdAlarms(stationId, damId, snapshot, configs).catch(() => { });
+
+    // 2. Gom nhóm dữ liệu ghi vào database qua buffer (TimescaleDB).
+    // Chỉ lưu loại cảm biến vừa nhận (freshTypes) — không ghi lại giá trị cũ của các loại khác.
+    const candidates: Array<[string, number, string]> = [
+      ['vibration_freq', +dto.freq, 'Hz'],
+      ['vibration_amp', +dto.amp, 'mm/s'],
+      ['water_level', +dto.waterLevel, 'cm'],
+      ['moisture', +dto.moisture, '%'],
     ];
+    const readingsToInsert: SensorReading[] = candidates
+      .filter(([type]) => !freshTypes || freshTypes.includes(type))
+      .map(([type, value, unit]) => this.createReading(timestamp, sensorId, type, value, unit, damId));
 
     readingsToInsert.forEach(reading => this.bufferService.push(reading));
 
-    // Backend TUYỆT ĐỐI không tự tạo AlarmEvent từ telemetry.
-    // Tất cả AlarmEvent trong toàn bộ hệ thống đều do Jetson TX2 phân tích và phát qua MQTT (handleAnomalyEvent).
+    // Backend KHÔNG tự tạo AlarmEvent RUNG ĐỘNG từ telemetry — mọi cảnh báo rung động/vết nứt
+    // đều do Jetson TX2 phân tích và phát qua MQTT (handleAnomalyEvent).
+    // Riêng nước/độ ẩm do backend tự so ngưỡng: xem evaluateThresholdAlarms() ở trên, kết quả
+    // được đẩy qua hàng đợi pendingAlarms (drainPendingAlarms) chứ không trả về ở đây.
     return { snapshot, alarms: [] };
   }
 
@@ -659,31 +852,53 @@ export class SensorService implements OnModuleInit {
 
     const typeLower = (sensorType || '').toLowerCase();
 
+    // Loại số đo THỰC SỰ có trong message này — chỉ những loại đó mới được ghi xuống DB,
+    // tránh ghi lại giá trị cũ của các cảm biến khác (xem tham số freshTypes của ingest()).
+    const freshTypes: string[] = [];
+
     // 2. Parse thông số cảm biến tương ứng
     if (typeLower === 'vibration') {
       if (payload.amp !== undefined) state.amp = +payload.amp;
       else if (payload.value !== undefined) state.amp = +payload.value;
       else if (payload.val !== undefined) state.amp = +payload.val;
+      if (payload.amp !== undefined || payload.value !== undefined || payload.val !== undefined) {
+        freshTypes.push('vibration_amp');
+      }
 
-      if (payload.freq !== undefined) state.freq = +payload.freq;
+      if (payload.freq !== undefined) {
+        state.freq = +payload.freq;
+        freshTypes.push('vibration_freq');
+      }
     } else if (typeLower === 'water_level' || typeLower === 'waterlevel' || typeLower === 'water') {
       if (payload.waterLevel !== undefined) state.waterLevel = +payload.waterLevel;
       else if (payload.water_level !== undefined) state.waterLevel = +payload.water_level;
       else if (payload.value !== undefined) state.waterLevel = +payload.value;
       else if (payload.val !== undefined) state.waterLevel = +payload.val;
+      if (
+        payload.waterLevel !== undefined || payload.water_level !== undefined ||
+        payload.value !== undefined || payload.val !== undefined
+      ) {
+        freshTypes.push('water_level');
+      }
     } else if (typeLower === 'moisture' || typeLower === 'humidity' || typeLower === 'humid') {
       if (payload.moisture !== undefined) state.moisture = +payload.moisture;
       else if (payload.humidity !== undefined) state.moisture = +payload.humidity;
       else if (payload.value !== undefined) state.moisture = +payload.value;
       else if (payload.val !== undefined) state.moisture = +payload.val;
+      if (
+        payload.moisture !== undefined || payload.humidity !== undefined ||
+        payload.value !== undefined || payload.val !== undefined
+      ) {
+        freshTypes.push('moisture');
+      }
     } else {
       // Trường hợp payload tổng hoặc loại cảm biến khác
-      if (payload.freq !== undefined) state.freq = +payload.freq;
-      if (payload.amp !== undefined) state.amp = +payload.amp;
-      if (payload.waterLevel !== undefined) state.waterLevel = +payload.waterLevel;
-      if (payload.water_level !== undefined) state.waterLevel = +payload.water_level;
-      if (payload.moisture !== undefined) state.moisture = +payload.moisture;
-      if (payload.humidity !== undefined) state.moisture = +payload.humidity;
+      if (payload.freq !== undefined) { state.freq = +payload.freq; freshTypes.push('vibration_freq'); }
+      if (payload.amp !== undefined) { state.amp = +payload.amp; freshTypes.push('vibration_amp'); }
+      if (payload.waterLevel !== undefined) { state.waterLevel = +payload.waterLevel; freshTypes.push('water_level'); }
+      if (payload.water_level !== undefined) { state.waterLevel = +payload.water_level; freshTypes.push('water_level'); }
+      if (payload.moisture !== undefined) { state.moisture = +payload.moisture; freshTypes.push('moisture'); }
+      if (payload.humidity !== undefined) { state.moisture = +payload.humidity; freshTypes.push('moisture'); }
     }
 
     // 3. Cập nhật trạng thái 'online' và lastSeenAt cho Gateway & Node trong DB
@@ -711,7 +926,7 @@ export class SensorService implements OnModuleInit {
       state.damId || DEFAULT_DAM_ID,
     );
 
-    return this.ingest(dto);
+    return this.ingest(dto, freshTypes);
   }
 
   /**
@@ -1194,6 +1409,22 @@ export class SensorService implements OnModuleInit {
     }
 
     return event;
+  }
+
+  /**
+   * Biến thiên mực nước (m) của một Trạm trong cửa sổ quan sát gần nhất — lấy trực tiếp
+   * từ buffer lịch sử trong bộ nhớ (historyByStation, tối đa MAX_HISTORY điểm ~1 phút).
+   *
+   * CỐ Ý không quy đổi ra "m/giờ": cửa sổ chỉ dài khoảng 1 phút nên phép ngoại suy sẽ
+   * khuếch đại nhiễu cảm biến tới ~60 lần và sinh ra những con số báo động giả
+   * (vd dao động 0.3m trong 20 giây → "tăng 54 m/h"). Trả về độ chênh thực đo được.
+   */
+  private calcWaterLevelChange(stationId: number): number | null {
+    const h = this.historyByStation.get(stationId);
+    if (!h || h.waterLevel.length < 2) return null;
+
+    const delta = h.waterLevel[h.waterLevel.length - 1] - h.waterLevel[0];
+    return +delta.toFixed(2);
   }
 
   private pushHistory(s: SensorSnapshot) {

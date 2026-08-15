@@ -181,6 +181,10 @@ export class DamService implements OnModuleInit {
     });
     const saved = await this.damRepo.save(dam);
 
+    // Đập mới phải có ngay bộ ngưỡng mặc định, nếu không sẽ không cảnh báo được
+    // nước/độ ẩm và form sửa ngưỡng sẽ lưu không ăn (không có bản ghi để update).
+    await this.sensorService.ensureThresholdConfigs(saved.id);
+
     await this.auditLogService.logAction({
       action: 'CREATE_DAM',
       category: 'DAM',
@@ -212,6 +216,8 @@ export class DamService implements OnModuleInit {
   async deleteDam(id: string): Promise<{ ok: boolean }> {
     const dam = await this.findDamById(id);
     await this.damRepo.remove(dam);
+    // ThresholdConfig không có khoá ngoại tới Dam nên phải dọn tay, tránh để lại bản ghi mồ côi.
+    await this.sensorService.deleteThresholdConfigsByDam(id);
 
     await this.auditLogService.logAction({
       action: 'DELETE_DAM',

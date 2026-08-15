@@ -65,6 +65,36 @@ export class NodeService {
     }
   }
 
+  /**
+   * Sinh MAC placeholder duy nhất từ id node khi người dùng không khai báo.
+   * Octet đầu 0x02 = địa chỉ cục bộ (locally administered) nên không đụng MAC thật của nhà sản xuất.
+   */
+  private generatePlaceholderMac(seed: string): string {
+    let h = 0;
+    for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+    const octets = [
+      (h >>> 24) & 0xff,
+      (h >>> 16) & 0xff,
+      (h >>> 8) & 0xff,
+      h & 0xff,
+      seed.length & 0xff,
+    ];
+    return ['02', ...octets.map(o => o.toString(16).padStart(2, '0').toUpperCase())].join(':');
+  }
+
+  /** Tra ThresholdConfig rung động của Đập chứa Gateway này (nguồn ngưỡng duy nhất, cấp Đập). */
+  private async findDamVibrationConfig(gatewayId?: string): Promise<ThresholdConfig | null> {
+    if (!gatewayId) return null;
+    try {
+      const gw = await this.gatewayService.findById(gatewayId);
+      const damId = (gw as any)?.station?.damId;
+      if (!damId) return null;
+      return await this.thresholdConfigRepo.findOne({ where: { damId, sensorType: 'vibration' } });
+    } catch {
+      return null;
+    }
+  }
+
   private async assertCameraExists(cameraId: string): Promise<void> {
     try {
       await this.cameraService.findById(cameraId);
@@ -160,16 +190,22 @@ export class NodeService {
       gatewayId = 'GTW-ST01-TX2A';
     }
 
+    // Ngưỡng rung là giá trị CẤP ĐẬP (ThresholdConfig) — node mới phải kế thừa cấu hình hiện hành
+    // của đập, không dùng số mặc định cứng, nếu không node mới sẽ chạy ngưỡng khác các node anh em.
+    const damVibCfg = await this.findDamVibrationConfig(gatewayId);
+
     const node = new Node();
     node.id = nodeId;
     node.name = dto.name;
-    node.macAddress = dto.macAddress || dto.espMacAddress || 'AA:BB:CC:DD:EE:00';
+    // MAC có ràng buộc UNIQUE — không dùng hằng số mặc định, nếu không node thứ hai bỏ trống MAC
+    // sẽ lỗi trùng khoá. Sinh MAC cục bộ (locally administered) từ id node để luôn khác nhau.
+    node.macAddress = dto.macAddress || dto.espMacAddress || this.generatePlaceholderMac(nodeId);
     if (dto.description) node.description = dto.description;
     node.firmwareVersion = dto.firmwareVersion || 'v1.0.0';
     if (dto.installLocation) node.installLocation = dto.installLocation;
-    node.vibrationThreshold = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : 15.0;
-    node.warnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : 2.5;
-    node.criticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : 25.0;
+    node.vibrationThreshold = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : (damVibCfg?.alertHigh ?? 15.0);
+    node.warnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : (damVibCfg?.warnHigh ?? 2.5);
+    node.criticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : (damVibCfg?.criticalHigh ?? 25.0);
     node.alertMinCount = dto.alertMinCount != null ? Number(dto.alertMinCount) : 4;
     node.alertMinDurationSec = dto.alertMinDurationSec != null ? Number(dto.alertMinDurationSec) : 6.0;
     node.episodeResetGapSec = dto.episodeResetGapSec != null ? Number(dto.episodeResetGapSec) : 3.0;
@@ -312,8 +348,16 @@ export class NodeService {
       );
     }
 
-    // Đồng bộ ngược ngưỡng độ rung vừa cập nhật từ Node sang ThresholdConfig của Đập/Trạm
-    if (thresholdFieldsChanged) {
+    // Đồng bộ ngược ngưỡng độ rung sang ThresholdConfig của Đập — CHỈ khi 3 giá trị ngưỡng được
+    // gửi lên tường minh. Nếu gate bằng thresholdFieldsChanged (bao gồm cả alertMinCount /
+    // alertMinDurationSec) thì chỉ sửa tham số episode cũng ghi đè ngưỡng cấp Đập bằng giá trị
+    // cũ của riêng node này.
+    const vibrationValuesProvided =
+      dto.warnHigh !== undefined ||
+      dto.vibrationThreshold !== undefined ||
+      dto.criticalHigh !== undefined;
+
+    if (vibrationValuesProvided) {
       const damId = updated.gateway?.station?.damId;
       if (damId) {
         try {

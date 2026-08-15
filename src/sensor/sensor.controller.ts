@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SensorService } from './sensor.service';
-import { SensorDataDto } from './sensor.dto';
+import { SensorDataDto, UpdateThresholdDto } from './sensor.dto';
 import { SensorGateway } from '../gateway/sensor.gateway';
 import { AlarmEvent } from './entities/alarm-event.entity';
 import { MessagePattern, Payload, Ctx, MqttContext } from '@nestjs/microservices';
@@ -361,13 +361,16 @@ export class SensorController {
     return { configs };
   }
 
-  // Quản lý ngưỡng: Cập nhật cấu hình ngưỡng
+  // Quản lý ngưỡng: Cập nhật cấu hình ngưỡng (Bảo vệ bằng JWT Auth Guard & Phân quyền ADMIN, OPERATOR)
   @Put('thresholds/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'OPERATOR')
   async updateThresholdConfig(
     @Param('id') id: string,
-    @Body() body: any,
+    @Body() dto: UpdateThresholdDto,
+    @CurrentUser() user: User,
   ) {
-    const updated = await this.sensorService.updateThresholdConfig(id, body);
+    const updated = await this.sensorService.updateThresholdConfig(id, dto, user);
     return { ok: true, data: updated };
   }
 

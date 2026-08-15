@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -546,7 +546,29 @@ export class SensorService implements OnModuleInit {
     return this.thresholdConfigRepo.find({ where: { damId } });
   }
 
-  async updateThresholdConfig(id: string, update: Partial<ThresholdConfig>): Promise<ThresholdConfig> {
+  async updateThresholdConfig(id: string, update: Partial<ThresholdConfig>, actorUser?: User): Promise<ThresholdConfig> {
+    const currentConfig = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
+
+    if (update.warnHigh !== undefined && (isNaN(Number(update.warnHigh)) || Number(update.warnHigh) < 0 || Number(update.warnHigh) > 1000)) {
+      throw new BadRequestException('Giá trị warnHigh không hợp lệ (phải là số từ 0 đến 1000).');
+    }
+    if (update.alertHigh !== undefined && (isNaN(Number(update.alertHigh)) || Number(update.alertHigh) < 0 || Number(update.alertHigh) > 1000)) {
+      throw new BadRequestException('Giá trị alertHigh không hợp lệ (phải là số từ 0 đến 1000).');
+    }
+    if (update.criticalHigh !== undefined && (isNaN(Number(update.criticalHigh)) || Number(update.criticalHigh) < 0 || Number(update.criticalHigh) > 1000)) {
+      throw new BadRequestException('Giá trị criticalHigh không hợp lệ (phải là số từ 0 đến 1000).');
+    }
+
+    const effectiveWarnHigh = update.warnHigh !== undefined ? Number(update.warnHigh) : currentConfig.warnHigh;
+    const effectiveAlertHigh = update.alertHigh !== undefined ? Number(update.alertHigh) : currentConfig.alertHigh;
+    const effectiveCriticalHigh = update.criticalHigh !== undefined ? Number(update.criticalHigh) : currentConfig.criticalHigh;
+
+    if (!(effectiveWarnHigh < effectiveAlertHigh && effectiveAlertHigh < effectiveCriticalHigh)) {
+      throw new BadRequestException(
+        `Ngưỡng không hợp lệ: Yêu cầu warnHigh (${effectiveWarnHigh}) < alertHigh (${effectiveAlertHigh}) < criticalHigh (${effectiveCriticalHigh}).`,
+      );
+    }
+
     await this.thresholdConfigRepo.update(id, update);
     const updated = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
 
@@ -579,8 +601,8 @@ export class SensorService implements OnModuleInit {
       action: 'UPDATE_THRESHOLD',
       category: 'THRESHOLD',
       description: `Thay đổi cấu hình ngưỡng báo động [${updated.sensorType.toUpperCase()}] đập ${updated.damId} (Warn: ${updated.warnHigh}, Alert: ${updated.alertHigh}, Critical: ${updated.criticalHigh})`,
-      username: 'admin',
-      userRole: 'ADMIN',
+      username: actorUser?.username || 'admin',
+      userRole: actorUser?.role || 'ADMIN',
       metadata: updated,
     });
 

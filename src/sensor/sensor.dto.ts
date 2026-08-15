@@ -43,3 +43,13 @@ export interface SensorHistory {
   moisture: number[];
   percent: number[];
 }
+
+export class UpdateThresholdDto {
+  warnHigh?: number;
+  alertHigh?: number;
+  criticalHigh?: number;
+  warnLow?: number;
+  alertLow?: number;
+  tankHeight?: number;
+  sustainedSeconds?: number;
+}

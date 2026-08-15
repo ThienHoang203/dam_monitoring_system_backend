@@ -14,9 +14,17 @@ export class AuditLogController {
   async findAll(
     @Query('category') category?: string,
     @Query('limit') limit?: string,
+    @Query('page') page?: string,
+    @Query('search') search?: string,
   ) {
-    const maxLimit = limit ? parseInt(limit, 10) : 100;
-    const logs = await this.auditLogService.findAll(category, maxLimit);
-    return { logs };
+    const pageSize = limit ? parseInt(limit, 10) : 20;
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const { logs, total, categoryCounts } = await this.auditLogService.findAll(
+      category,
+      pageSize,
+      pageNum,
+      search,
+    );
+    return { logs, total, page: pageNum, pageSize, categoryCounts };
   }
 }

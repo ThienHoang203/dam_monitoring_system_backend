@@ -13,7 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as nodemailer from 'nodemailer';
 import { User, UserRole, UserStatus } from './entities/user.entity';
-import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto } from './auth.dto';
+import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto, UpdateProfileDto } from './auth.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
@@ -227,6 +227,32 @@ export class AuthService implements OnModuleInit {
         console.error('[AuthService] Lỗi async khi gửi approval email:', err),
       );
     }
+
+    const { passwordHash: _, ...result } = user;
+    return result;
+  }
+
+  // ── Tự cập nhật hồ sơ cá nhân (mọi role đã đăng nhập, chỉ sửa được thông tin của chính mình) ──
+  async updateProfile(userId: string, dto: UpdateProfileDto): Promise<Partial<User>> {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Người dùng không tồn tại');
+
+    if (dto.fullName) user.fullName = dto.fullName;
+    if (dto.phoneNumber !== undefined) user.phoneNumber = dto.phoneNumber;
+
+    if (dto.password) {
+      user.passwordHash = await bcrypt.hash(dto.password, 10);
+    }
+
+    await this.userRepo.save(user);
+
+    await this.auditLogService.logAction({
+      action: 'UPDATE_PROFILE',
+      category: 'AUTH',
+      description: `Tài khoản "${user.username}" (${user.role}) đã tự cập nhật hồ sơ cá nhân`,
+      username: user.username,
+      userRole: user.role,
+    });
 
     const { passwordHash: _, ...result } = user;
     return result;

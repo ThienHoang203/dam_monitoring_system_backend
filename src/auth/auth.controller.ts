@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto } from './auth.dto';
+import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto, UpdateProfileDto } from './auth.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
@@ -56,5 +56,14 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async getMe(@CurrentUser() user: User) {
     return this.authService.getProfile(user.id);
+  }
+
+  // Tự cập nhật hồ sơ cá nhân (họ tên / SĐT / mật khẩu) — mọi role đã đăng nhập,
+  // chỉ tác động tới chính tài khoản mình (không có role/status/assignedDamId ở đây).
+  @Put('me')
+  @UseGuards(JwtAuthGuard)
+  async updateMe(@CurrentUser() user: User, @Body() dto: UpdateProfileDto) {
+    const updated = await this.authService.updateProfile(user.id, dto);
+    return { ok: true, user: updated };
   }
 }

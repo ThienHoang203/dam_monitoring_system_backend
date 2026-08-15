@@ -6,6 +6,7 @@ import { SensorGateway } from '../gateway/sensor.gateway';
 import { SensorReading } from './entities/sensor-reading.entity';
 import { ThresholdConfig } from './entities/threshold-config.entity';
 import { AlarmEvent } from './entities/alarm-event.entity';
+import { StationStatusHistory } from './entities/station-status-history.entity';
 import { Station } from '../dam/entities/station.entity';
 import { Dam } from '../dam/entities/dam.entity';
 import { SensorBufferService } from './sensor-buffer.service';
@@ -21,6 +22,7 @@ import { User } from '../auth/entities/user.entity';
       SensorReading,
       ThresholdConfig,
       AlarmEvent,
+      StationStatusHistory,
       Station,
       Dam,
       Gateway,

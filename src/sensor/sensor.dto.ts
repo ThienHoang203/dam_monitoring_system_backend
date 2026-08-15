@@ -43,3 +43,20 @@ export interface SensorHistory {
   moisture: number[];
   percent: number[];
 }
+
+// Phát khi trạng thái an toàn tổng hợp của Station/Dam thay đổi (xem SensorService.recomputeStationStatus).
+export interface StationStatusChangeEvent {
+  level: 'station' | 'dam';
+  stationId?: number;
+  damId: string;
+  status: string; // 'safe' | 'warning' | 'danger' | 'critical' | 'unknown'
+  severity: number; // Severity enum value; -1 khi status = 'unknown' (không có tín hiệu nào còn tươi)
+  timestamp: string;
+}
+
+// Phát khi một chỉ số tổng hợp cấp Dam thay đổi (xem SensorService.recomputeDamWaterLevel).
+export interface DamMetricChangeEvent {
+  damId: string;
+  waterLevel: number; // MAX(waterLevel) trong các Station thuộc Dam
+  timestamp: string;
+}

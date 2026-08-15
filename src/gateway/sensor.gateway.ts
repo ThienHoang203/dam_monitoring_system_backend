@@ -6,7 +6,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { SensorService } from '../sensor/sensor.service';
-import { SensorSnapshot } from '../sensor/sensor.dto';
+import { SensorSnapshot, StationStatusChangeEvent, DamMetricChangeEvent } from '../sensor/sensor.dto';
 
 @WebSocketGateway({
   cors: { origin: '*', methods: ['GET', 'POST'], credentials: false },
@@ -51,5 +51,17 @@ export class SensorGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // cho dashboard vẽ biểu đồ ngưỡng, kể cả khi breach=false (NORMAL/WARNING).
   broadcastVibrationStatus(status: any) {
     this.server.emit('vibration_status', status);
+  }
+
+  // Broadcast khi trạng thái an toàn tổng hợp của Station/Dam thay đổi mức
+  // (xem SensorService.recomputeStationStatus/recomputeDamStatus).
+  broadcastStationStatus(change: StationStatusChangeEvent) {
+    this.server.emit('station_status_changed', change);
+  }
+
+  // Broadcast khi Dam.waterLevel (MAX các Station thuộc Dam) thay đổi
+  // (xem SensorService.recomputeDamWaterLevel).
+  broadcastDamMetrics(change: DamMetricChangeEvent) {
+    this.server.emit('dam_metrics_changed', change);
   }
 }

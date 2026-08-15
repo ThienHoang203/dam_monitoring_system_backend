@@ -40,6 +40,20 @@ export class SensorController {
    * 1. Ưu tiên dùng MINIO_PUBLIC_ENDPOINT nếu cấu hình Ngrok riêng cho MinIO.
    * 2. Nếu không, chuyển sang endpoint proxy /sensor/images/... trên Backend.
    */
+  // Phát mọi thay đổi trạng thái an toàn Station/Dam (nếu có) được SensorService xếp hàng
+  // sau lần ingest/vibration-status/anomaly/resolve gần nhất.
+  private broadcastStatusChanges() {
+    const changes = this.sensorService.drainStatusChanges();
+    for (const change of changes) {
+      this.gateway.broadcastStationStatus(change);
+    }
+
+    const metricChanges = this.sensorService.drainDamMetricChanges();
+    for (const change of metricChanges) {
+      this.gateway.broadcastDamMetrics(change);
+    }
+  }
+
   private rewriteImageUrl(alarm: AlarmEvent): AlarmEvent {
     if (!alarm || !alarm.imageUrl) return alarm;
     try {
@@ -140,6 +154,7 @@ export class SensorController {
     for (const alarm of alarms) {
       this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
     }
+    this.broadcastStatusChanges();
 
     return { ok: true };
   }
@@ -180,6 +195,7 @@ export class SensorController {
       for (const alarm of alarms) {
         this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
       }
+      this.broadcastStatusChanges();
 
       return { ok: true };
     } catch (error: any) {
@@ -219,6 +235,7 @@ export class SensorController {
       for (const alarm of alarms) {
         this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
       }
+      this.broadcastStatusChanges();
 
       return { ok: true };
     } catch (error: any) {
@@ -247,6 +264,7 @@ export class SensorController {
       for (const alarm of alarms) {
         this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
       }
+      this.broadcastStatusChanges();
       return { ok: true };
     } catch (error: any) {
       console.error('[MQTT] Lỗi ingest data:', error.message);
@@ -276,6 +294,7 @@ export class SensorController {
         payload,
       );
       this.gateway.broadcastVibrationStatus(status);
+      this.broadcastStatusChanges();
       return { ok: true };
     } catch (error: any) {
       console.error('[MQTT Vibration Status] Lỗi xử lý trạng thái ngưỡng độ rung:', error.message);
@@ -288,6 +307,7 @@ export class SensorController {
     try {
       const alarm = await this.sensorService.handleAnomalyEvent(payload);
       this.gateway.broadcastAlarm(this.rewriteImageUrl(alarm));
+      this.broadcastStatusChanges();
       return { ok: true };
     } catch (error: any) {
       console.error('[MQTT Anomaly] Lỗi xử lý sự kiện anomaly:', error.message);
@@ -344,6 +364,23 @@ export class SensorController {
       endDate,
     });
     return { kpi };
+  }
+
+  // Lịch sử thay đổi trạng thái an toàn (audit trail) của Station/Dam
+  @Get('status-history')
+  async getStatusHistory(
+    @Query('stationId') stationId?: string,
+    @Query('damId') damId?: string,
+    @Query('level') level?: 'station' | 'dam',
+    @Query('limit') limit?: string,
+  ) {
+    const history = await this.sensorService.getStatusHistory({
+      stationId: stationId ? parseInt(stationId, 10) : undefined,
+      damId,
+      level,
+      limit: limit ? parseInt(limit, 10) : 50,
+    });
+    return { history };
   }
 
   // Lấy danh sách Cán bộ phụ trách quản lý một Đập thủy điện
@@ -409,6 +446,7 @@ export class SensorController {
   @Roles('ADMIN', 'OPERATOR')
   async resolveAlarmEvent(@Param('id') id: string) {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
+    this.broadcastStatusChanges();
     return { ok: true, data: this.rewriteImageUrl(resolved) };
   }
 

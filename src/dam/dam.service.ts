@@ -10,6 +10,7 @@ import { Gateway } from '../gateway/entities/gateway.entity';
 import { Camera } from '../camera/entities/camera.entity';
 import { Node } from '../node/entities/node.entity';
 import { Sensor } from '../node/entities/sensor.entity';
+import { SensorService } from '../sensor/sensor.service';
 
 // Helper chuyển tiếng Việt thành slug không dấu
 function toSlug(str: string): string {
@@ -39,6 +40,7 @@ export class DamService implements OnModuleInit {
     @InjectRepository(Sensor)
     private readonly sensorRepo: Repository<Sensor>,
     private readonly auditLogService: AuditLogService,
+    private readonly sensorService: SensorService,
   ) {}
 
   async onModuleInit() {
@@ -257,6 +259,10 @@ export class DamService implements OnModuleInit {
     const station = this.stationRepo.create(dto);
     const saved = await this.stationRepo.save(station);
 
+    // Đăng ký ngay Station -> Dam để tổng hợp trạng thái/waterLevel cấp Dam nhận ra Station mới
+    // mà không cần đợi backend khởi động lại (xem SensorService.registerStationDam).
+    this.sensorService.registerStationDam(saved.id, saved.damId);
+
     await this.auditLogService.logAction({
       action: 'CREATE_STATION',
       category: 'STATION',
@@ -272,6 +278,11 @@ export class DamService implements OnModuleInit {
     const oldStation = await this.findStationById(id);
     await this.stationRepo.update(id, dto);
     const updatedStation = await this.findStationById(id);
+
+    // Nếu Station chuyển sang Dam khác, cập nhật ngay mapping để tổng hợp cấp Dam không bị lệch.
+    if (updatedStation.damId && updatedStation.damId !== oldStation.damId) {
+      this.sensorService.registerStationDam(updatedStation.id, updatedStation.damId);
+    }
 
     await this.auditLogService.logAction({
       action: 'UPDATE_STATION',

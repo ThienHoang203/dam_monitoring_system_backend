@@ -8,9 +8,10 @@ import { Node } from '../node/entities/node.entity';
 import { Sensor } from '../node/entities/sensor.entity';
 import { DamService } from './dam.service';
 import { DamController } from './dam.controller';
+import { SensorModule } from '../sensor/sensor.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Dam, Station, Gateway, Camera, Node, Sensor])],
+  imports: [TypeOrmModule.forFeature([Dam, Station, Gateway, Camera, Node, Sensor]), SensorModule],
   controllers: [DamController],
   providers: [DamService],
   exports: [DamService],

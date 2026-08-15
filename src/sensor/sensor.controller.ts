@@ -322,6 +322,13 @@ export class SensorController {
     return { data };
   }
 
+  // Lấy danh sách Cán bộ phụ trách quản lý một Đập thủy điện
+  @Get('dam-managers')
+  async getDamManagers(@Query('damId') damId: string) {
+    const managers = await this.sensorService.getDamManagers(damId);
+    return { managers };
+  }
+
   // Quản lý ngưỡng: Lấy toàn bộ cấu hình ngưỡng của một đập
   @Get('thresholds')
   async getThresholdConfigs(@Query('damId') damId: string) {

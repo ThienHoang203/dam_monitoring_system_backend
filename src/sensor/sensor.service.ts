@@ -12,6 +12,7 @@ import { Dam } from '../dam/entities/dam.entity';
 import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
 import { Evidence } from '../evidence/entities/evidence.entity';
+import { User } from '../auth/entities/user.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
@@ -66,6 +67,8 @@ export class SensorService implements OnModuleInit {
     private readonly nodeRepo: Repository<Node>,
     @InjectRepository(Evidence)
     private readonly evidenceRepo: Repository<Evidence>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
     private readonly bufferService: SensorBufferService,
     private readonly configService: ConfigService,
     private readonly auditLogService: AuditLogService,
@@ -746,25 +749,47 @@ export class SensorService implements OnModuleInit {
     }
   }
 
+  /**
+   * Truy vấn danh sách Cán bộ phụ trách quản lý của một Đập thủy điện
+   */
+  async getDamManagers(damId?: string): Promise<{ id: string; username: string; email: string; fullName: string; role: string; assignedDamId: string }[]> {
+    const selectFields = { id: true, username: true, email: true, fullName: true, role: true, assignedDamId: true } as const;
+    if (!damId || damId === 'all') {
+      return this.userRepo.find({
+        where: { status: 'ACTIVE' },
+        select: selectFields,
+      });
+    }
+
+    const assignedUsers = await this.userRepo.find({
+      where: { assignedDamId: damId, status: 'ACTIVE' },
+      select: selectFields,
+    });
+
+    if (assignedUsers.length > 0) {
+      return assignedUsers;
+    }
+
+    // Fallback nếu đập chưa được gán cán bộ riêng: Lấy danh sách ADMIN active
+    return this.userRepo.find({
+      where: { role: 'ADMIN', status: 'ACTIVE' },
+      select: selectFields,
+    });
+  }
+
   async sendEmailAlert(payload: {
-    toEmail: string | string[];
+    toEmail?: string | string[];
     subject?: string;
     message: string;
     alarmId?: string;
+    damId?: string;
   }): Promise<{ success: boolean; message: string }> {
     const host = this.configService.get<string>('SMTP_HOST', 'smtp.gmail.com');
     const port = this.configService.get<number>('SMTP_PORT', 587);
     const user = this.configService.get<string>('SMTP_USER', '');
     const pass = this.configService.get<string>('SMTP_PASS', '');
 
-    let rawEmail = payload.toEmail;
-    if (Array.isArray(rawEmail)) {
-      rawEmail = rawEmail.filter(e => Boolean(e && e.trim())).join(', ');
-    }
-    const targetEmail = rawEmail || this.configService.get<string>('DEFAULT_ALERT_EMAIL', 'ruka13312002@gmail.com');
-    const emailSubject = payload.subject || `[CẢNH BÁO KHẨN CẤP] Thông báo chỉ đạo từ Ban Quản lý Hồ Đập`;
-
-    // Tìm thông tin sự kiện cảnh báo từ DB nếu có alarmId
+    // 1. Tìm thông tin sự kiện cảnh báo từ DB nếu có alarmId
     let alarmInfo: AlarmEvent | null = null;
     if (payload.alarmId) {
       try {
@@ -774,11 +799,34 @@ export class SensorService implements OnModuleInit {
       }
     }
 
-    const locationText = alarmInfo
-      ? `Trạm ${alarmInfo.sensorId === 'sensor_node_1' ? 'K25+500 (Thân đập chính Đan Phượng)' : alarmInfo.sensorId} - Đập ${alarmInfo.damId}`
-      : 'Trạm K25+500 - Thân đập chính Đan Phượng (sensor_node_1)';
+    const effectiveDamId = payload.damId || alarmInfo?.damId || DEFAULT_DAM_ID;
 
-    console.log(`[SensorService] Đang chuẩn bị gửi Email cảnh báo tới: ${targetEmail} cho vị trí: ${locationText}`);
+    // 2. Tự động lấy danh sách Email Cán bộ quản lý đập xảy ra sự cố từ CSDL
+    const damManagers = await this.getDamManagers(effectiveDamId);
+    const managerEmails = damManagers.map(m => m.email).filter(Boolean);
+
+    let emailArray: string[] = [];
+    if (payload.toEmail) {
+      if (Array.isArray(payload.toEmail)) {
+        emailArray = payload.toEmail.filter(e => Boolean(e && e.trim()));
+      } else if (typeof payload.toEmail === 'string') {
+        emailArray = payload.toEmail.split(',').map(e => e.trim()).filter(Boolean);
+      }
+    }
+
+    // Hợp nhất Email Cán bộ phụ trách đập và các email được truyền vào
+    const combinedEmails = Array.from(new Set([...emailArray, ...managerEmails]));
+    const targetEmail = combinedEmails.length > 0
+      ? combinedEmails.join(', ')
+      : this.configService.get<string>('DEFAULT_ALERT_EMAIL', 'ruka13312002@gmail.com');
+
+    const emailSubject = payload.subject || `[CẢNH BÁO AN TOÀN HỒ ĐẬP] Sự cố tại Đập ${effectiveDamId}`;
+
+    const locationText = alarmInfo
+      ? `Trạm ${alarmInfo.sensorId === 'sensor_node_1' ? 'K25+500 (Thân đập chính)' : alarmInfo.sensorId} - Đập ${alarmInfo.damId}`
+      : `Đập ${effectiveDamId}`;
+
+    console.log(`[SensorService] Gửi Email cảnh báo tới Cán bộ quản lý đập (${effectiveDamId}): ${targetEmail}`);
 
     const transporter = nodemailer.createTransport({
       host,
@@ -791,16 +839,16 @@ export class SensorService implements OnModuleInit {
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
         <div style="background-color: #dc2626; color: #ffffff; padding: 20px; text-align: center;">
           <h1 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 1px;">🚨 CẢNH BÁO AN TOÀN HỒ ĐẬP</h1>
-          <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Hệ thống Giám sát & Điều hành Khẩn cấp Hồ đập Thủy lợi</p>
+          <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Gửi đến Cán bộ phụ trách quản lý Đập ${effectiveDamId}</p>
         </div>
         <div style="padding: 24px;">
           <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 14px; margin-bottom: 20px; border-radius: 4px;">
-            <p style="margin: 0; color: #991b1b; font-weight: bold; font-size: 14px;">Thông điệp chỉ đạo từ Admin Trực ban:</p>
+            <p style="margin: 0; color: #991b1b; font-weight: bold; font-size: 14px;">Thông điệp chỉ đạo khẩn cấp từ Ban Quản Lý:</p>
             <p style="margin: 8px 0 0 0; color: #7f1d1d; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${payload.message}</p>
           </div>
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;">
             <tr style="border-bottom: 1px solid #f0f0f0;">
-              <td style="padding: 10px; font-weight: bold; color: #555; width: 40%;">📍 Địa điểm đặt cảm biến:</td>
+              <td style="padding: 10px; font-weight: bold; color: #555; width: 40%;">📍 Vị trí sự cố:</td>
               <td style="padding: 10px; color: #dc2626; font-weight: bold;">${locationText}</td>
             </tr>
             ${alarmInfo ? `
@@ -817,14 +865,13 @@ export class SensorService implements OnModuleInit {
               <td style="padding: 10px; font-weight: bold; color: #555;">🕒 Thời điểm ghi nhận:</td>
               <td style="padding: 10px; color: #111;">${new Date().toLocaleString('vi-VN')}</td>
             </tr>
-            
           </table>
           <div style="text-align: center; margin-top: 25px;">
-            <a href="http://localhost:3000/alerts" style="background-color: #dc2626; color: #ffffff; padding: 12px 24px; text-decoration: none; font-weight: bold; font-size: 13px; border-radius: 6px; display: inline-block;">TRUY CẬP BẢN ĐỒ GIÁM SÁT VỊ TRÍ</a>
+            <a href="http://localhost:3000/alerts" style="background-color: #dc2626; color: #ffffff; padding: 12px 24px; text-decoration: none; font-weight: bold; font-size: 13px; border-radius: 6px; display: inline-block;">TRUY CẬP TRUNG TÂM CHỈ HUY KHẨN CẤP</a>
           </div>
         </div>
         <div style="background-color: #f9fafb; padding: 14px; text-align: center; font-size: 11px; color: #6b7280; border-top: 1px solid #f0f0f0;">
-          Email tự động từ Hệ thống Cảnh báo Hồ đập Thủy lợi.
+          Email tự động gửi tới Cán bộ Quản lý Đập ${effectiveDamId}.
         </div>
       </div>
     `;
@@ -834,7 +881,7 @@ export class SensorService implements OnModuleInit {
         console.warn('[SensorService] SMTP chưa được cấu hình mật khẩu thực tế trong .env. Đã ghi nhận lệnh gửi email giả lập thành công.');
         return {
           success: true,
-          message: `Đã giả lập gửi Email thành công tới ${targetEmail} (Vui lòng cấu hình SMTP_PASS trong .env để gửi Email thật).`,
+          message: `Đã giả lập gửi Email thành công tới Cán bộ trực đập (${targetEmail}).`,
         };
       }
 
@@ -848,7 +895,7 @@ export class SensorService implements OnModuleInit {
       console.log(`[SensorService] Đã gửi Email thành công! MessageId: ${info.messageId}`);
       return {
         success: true,
-        message: `Đã gửi Email cảnh báo thành công tới ${targetEmail}!`,
+        message: `Đã gửi Email cảnh báo tới Cán bộ trực đập (${targetEmail})!`,
       };
     } catch (err: any) {
       console.error('[SensorService] Lỗi khi gửi Email qua SMTP:', err);

@@ -13,6 +13,7 @@ import { DownsamplerService } from './downsampler.service';
 import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
 import { Evidence } from '../evidence/entities/evidence.entity';
+import { User } from '../auth/entities/user.entity';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { Evidence } from '../evidence/entities/evidence.entity';
       Gateway,
       Node,
       Evidence,
+      User,
     ]),
   ],
   controllers: [SensorController],

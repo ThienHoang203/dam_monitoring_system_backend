@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Node } from './entities/node.entity';
 import { Sensor } from './entities/sensor.entity';
+import { ThresholdConfig } from '../sensor/entities/threshold-config.entity';
 import {
   CreateNodeDto,
   UpdateNodeDto,
@@ -30,6 +31,8 @@ export class NodeService {
     private readonly nodeRepo: Repository<Node>,
     @InjectRepository(Sensor)
     private readonly sensorRepo: Repository<Sensor>,
+    @InjectRepository(ThresholdConfig)
+    private readonly thresholdConfigRepo: Repository<ThresholdConfig>,
     private readonly gatewayService: GatewayService,
     private readonly sensorService: SensorService,
     private readonly cameraService: CameraService,
@@ -307,6 +310,27 @@ export class NodeService {
         updated.gateway.stationId,
         updated.gateway.station?.damId,
       );
+    }
+
+    // Đồng bộ ngược ngưỡng độ rung vừa cập nhật từ Node sang ThresholdConfig của Đập/Trạm
+    if (thresholdFieldsChanged) {
+      const damId = updated.gateway?.station?.damId;
+      if (damId) {
+        try {
+          const vibCfg = await this.thresholdConfigRepo.findOne({
+            where: { damId, sensorType: 'vibration' },
+          });
+          if (vibCfg) {
+            vibCfg.warnHigh = effectiveWarnHigh;
+            vibCfg.alertHigh = effectiveAlertHigh;
+            vibCfg.criticalHigh = effectiveCriticalHigh;
+            await this.thresholdConfigRepo.save(vibCfg);
+            console.log(`[NodeService] Đã đồng bộ ngược ngưỡng độ rung từ Node ${id} sang ThresholdConfig Đập ${damId}`);
+          }
+        } catch (err: any) {
+          console.warn('[NodeService] Lỗi đồng bộ ngược ThresholdConfig:', err.message);
+        }
+      }
     }
 
     return updated;

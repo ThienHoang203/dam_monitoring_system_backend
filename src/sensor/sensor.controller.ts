@@ -103,17 +103,25 @@ export class SensorController {
         return res.status(400).send('Bad Request: Missing image path');
       }
 
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(imageSubPath);
+      } catch {
+        return res.status(400).send('Invalid image path');
+      }
+
+      if (decoded.includes('..') || decoded.includes('\\') || decoded.startsWith('/')) {
+        return res.status(400).send('Invalid image path');
+      }
+
       const minioEndpoint =
         this.configService.get<string>('MINIO_INTERNAL_ENDPOINT') ||
         this.configService.get<string>('MINIO_ENDPOINT', 'http://127.0.0.1:9000');
       const bucket = this.configService.get<string>('MINIO_BUCKET', 'dam-images');
 
       const cleanMinioBase = minioEndpoint.replace(/\/+$/, '');
-      const cleanSubPath = imageSubPath.startsWith(`${bucket}/`)
-        ? imageSubPath
-        : `${bucket}/${imageSubPath.replace(/^\/+/, '')}`;
-
-      const targetUrl = `${cleanMinioBase}/${cleanSubPath}`;
+      const subPathWithoutBucket = decoded.replace(new RegExp(`^${bucket}/`), '');
+      const targetUrl = `${cleanMinioBase}/${bucket}/${encodeURI(subPathWithoutBucket)}`;
 
       const fetchRes = await fetch(targetUrl);
       if (!fetchRes.ok) {
@@ -440,8 +448,8 @@ export class SensorController {
     return { ok: true, data: rewritten };
   }
 
-  // Gửi Email thông báo khẩn cấp — Yêu cầu quyền ADMIN hoặc OPERATOR
-  @Roles('ADMIN', 'OPERATOR')
+  // Gửi Email thông báo khẩn cấp — Yêu cầu quyền ADMIN
+  @Roles('ADMIN')
   @Post('send-email-alert')
   async sendEmailAlert(
     @Body() body: { toEmail: string | string[]; subject?: string; message: string; alarmId?: string }

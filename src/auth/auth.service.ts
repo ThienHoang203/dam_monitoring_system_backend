@@ -12,6 +12,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as nodemailer from 'nodemailer';
+import * as crypto from 'crypto';
 import { User, UserRole, UserStatus } from './entities/user.entity';
 import { RegisterDto, LoginDto, ApproveUserDto, UpdateUserDto, UpdateProfileDto } from './auth.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
@@ -34,8 +35,25 @@ export class AuthService implements OnModuleInit {
     const adminCount = await this.userRepo.count({ where: { role: 'ADMIN' } });
     if (adminCount > 0) return;
 
-    console.log('[AuthService] Seeding default Admin user (admin / admin123456)...');
-    const passwordHash = await bcrypt.hash('admin123456', 10);
+    const bootstrapPassword = this.configService.get<string>('ADMIN_BOOTSTRAP_PASSWORD');
+    let rawPassword = '';
+    let mustChangePassword = false;
+
+    if (bootstrapPassword && bootstrapPassword.trim().length >= 8) {
+      rawPassword = bootstrapPassword.trim();
+      mustChangePassword = false;
+      console.log('[AuthService] Tạo tài khoản Admin mặc định từ ADMIN_BOOTSTRAP_PASSWORD trong môi trường.');
+    } else {
+      rawPassword = crypto.randomBytes(12).toString('hex');
+      mustChangePassword = true;
+      console.log('================================================================');
+      console.log(`[CẢNH BÁO BẢO MẬT] ADMIN_BOOTSTRAP_PASSWORD chưa được cấu hình.`);
+      console.log(`[CẢNH BÁO BẢO MẬT] Đã sinh mật khẩu Admin ngẫu nhiên ban đầu: ${rawPassword}`);
+      console.log(`[CẢNH BÁO BẢO MẬT] Vui lòng đăng nhập tài khoản "admin" và đổi mật khẩu ngay lập tức.`);
+      console.log('================================================================');
+    }
+
+    const passwordHash = await bcrypt.hash(rawPassword, 10);
     const admin = this.userRepo.create({
       username: 'admin',
       email: 'admin@damsafe.gov.vn',
@@ -44,9 +62,10 @@ export class AuthService implements OnModuleInit {
       role: 'ADMIN',
       status: 'ACTIVE',
       phoneNumber: '0988888888',
+      mustChangePassword,
     });
     await this.userRepo.save(admin);
-    console.log('[AuthService] Default Admin user created successfully!');
+    console.log('[AuthService] Tạo tài khoản Admin mặc định ban đầu thành công!');
   }
 
   // ── Đăng ký tài khoản (mặc định status: PENDING_APPROVAL chờ duyệt) ──
@@ -209,6 +228,7 @@ export class AuthService implements OnModuleInit {
 
     if (dto.password) {
       user.passwordHash = await bcrypt.hash(dto.password, 10);
+      user.mustChangePassword = false;
     }
 
     await this.userRepo.save(user);
@@ -242,6 +262,7 @@ export class AuthService implements OnModuleInit {
 
     if (dto.password) {
       user.passwordHash = await bcrypt.hash(dto.password, 10);
+      user.mustChangePassword = false;
     }
 
     await this.userRepo.save(user);
@@ -289,6 +310,12 @@ export class AuthService implements OnModuleInit {
     const smtpUser = this.configService.get<string>('SMTP_USER', '');
     const smtpPass = this.configService.get<string>('SMTP_PASS', '');
 
+    const esc = (s: any = '') =>
+      String(s ?? '').replace(
+        /[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c),
+      );
+
     const roleName =
       user.role === 'ADMIN'
         ? 'Quản trị viên (ADMIN)'
@@ -296,7 +323,7 @@ export class AuthService implements OnModuleInit {
         ? 'Cán bộ Vận hành (OPERATOR)'
         : 'Khách quan sát (VIEWER)';
     const damAssignment = user.assignedDamId
-      ? `Đập được phân công: <strong>${user.assignedDamId}</strong>`
+      ? `Đập được phân công: <strong>${esc(user.assignedDamId)}</strong>`
       : 'Phạm vi: <strong>Toàn bộ hệ thống</strong>';
 
     const subject = `[THÔNG BÁO] Tài khoản Cán bộ của bạn đã được phê duyệt thành công`;
@@ -310,7 +337,7 @@ export class AuthService implements OnModuleInit {
         </div>
         <div style="padding: 30px 24px;">
           <p style="font-size: 15px; color: #1e293b; margin-top: 0;">
-            Kính gửi <strong>${user.fullName || user.username}</strong>,
+            Kính gửi <strong>${esc(user.fullName || user.username)}</strong>,
           </p>
           <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 14px 18px; margin-bottom: 24px; border-radius: 6px;">
             <p style="margin: 0; color: #166534; font-size: 14px; line-height: 1.6;">
@@ -322,15 +349,15 @@ export class AuthService implements OnModuleInit {
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 26px; font-size: 13.5px;">
             <tr style="border-bottom: 1px solid #f1f5f9;">
               <td style="padding: 10px 0; color: #64748b; width: 40%;">👤 Tên đăng nhập:</td>
-              <td style="padding: 10px 0; color: #0f172a; font-weight: bold;">${user.username}</td>
+              <td style="padding: 10px 0; color: #0f172a; font-weight: bold;">${esc(user.username)}</td>
             </tr>
             <tr style="border-bottom: 1px solid #f1f5f9;">
               <td style="padding: 10px 0; color: #64748b;">📧 Email công vụ:</td>
-              <td style="padding: 10px 0; color: #0f172a;">${user.email}</td>
+              <td style="padding: 10px 0; color: #0f172a;">${esc(user.email)}</td>
             </tr>
             <tr style="border-bottom: 1px solid #f1f5f9;">
               <td style="padding: 10px 0; color: #64748b;">🛡️ Quyền hạn:</td>
-              <td style="padding: 10px 0; color: #4f46e5; font-weight: bold;">${roleName}</td>
+              <td style="padding: 10px 0; color: #4f46e5; font-weight: bold;">${esc(roleName)}</td>
             </tr>
             <tr style="border-bottom: 1px solid #f1f5f9;">
               <td style="padding: 10px 0; color: #64748b;">📍 Phân công:</td>

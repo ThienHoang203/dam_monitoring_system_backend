@@ -93,6 +93,7 @@ services:
       JETSON_TX2_URL: ${JETSON_TX2_URL}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
       JWT_SECRET: ${JWT_SECRET}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD}
     depends_on:
       - timescaledb
       - minio

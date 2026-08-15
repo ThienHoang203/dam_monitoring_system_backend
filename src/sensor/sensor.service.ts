@@ -1555,30 +1555,36 @@ export class SensorService implements OnModuleInit {
       auth: user && pass ? { user, pass } : undefined,
     });
 
+    const esc = (s: any = '') =>
+      String(s ?? '').replace(
+        /[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c),
+      );
+
     const htmlBody = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff;">
         <div style="background-color: #dc2626; color: #ffffff; padding: 20px; text-align: center;">
           <h1 style="margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 1px;">🚨 CẢNH BÁO AN TOÀN HỒ ĐẬP</h1>
-          <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Gửi đến Cán bộ phụ trách quản lý Đập ${effectiveDamId}</p>
+          <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Gửi đến Cán bộ phụ trách quản lý Đập ${esc(effectiveDamId)}</p>
         </div>
         <div style="padding: 24px;">
           <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 14px; margin-bottom: 20px; border-radius: 4px;">
             <p style="margin: 0; color: #991b1b; font-weight: bold; font-size: 14px;">Thông điệp chỉ đạo khẩn cấp từ Ban Quản Lý:</p>
-            <p style="margin: 8px 0 0 0; color: #7f1d1d; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${payload.message}</p>
+            <p style="margin: 8px 0 0 0; color: #7f1d1d; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${esc(payload.message)}</p>
           </div>
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px;">
             <tr style="border-bottom: 1px solid #f0f0f0;">
               <td style="padding: 10px; font-weight: bold; color: #555; width: 40%;">📍 Vị trí sự cố:</td>
-              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${locationText}</td>
+              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${esc(locationText)}</td>
             </tr>
             ${alarmInfo ? `
             <tr style="border-bottom: 1px solid #f0f0f0;">
               <td style="padding: 10px; font-weight: bold; color: #555;">📊 Thông số đo được:</td>
-              <td style="padding: 10px; color: #111; font-weight: bold;">${alarmInfo.sensorType.toUpperCase()}: ${alarmInfo.measuredVal} (Ngưỡng: ${alarmInfo.thresholdVal})</td>
+              <td style="padding: 10px; color: #111; font-weight: bold;">${esc(alarmInfo.sensorType.toUpperCase())}: ${esc(alarmInfo.measuredVal)} (Ngưỡng: ${esc(alarmInfo.thresholdVal)})</td>
             </tr>
             <tr style="border-bottom: 1px solid #f0f0f0;">
               <td style="padding: 10px; font-weight: bold; color: #555;">⚠️ Mức độ cảnh báo:</td>
-              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${alarmInfo.severity}</td>
+              <td style="padding: 10px; color: #dc2626; font-weight: bold;">${esc(alarmInfo.severity)}</td>
             </tr>
             ` : ''}
             <tr style="border-bottom: 1px solid #f0f0f0;">
@@ -1591,7 +1597,7 @@ export class SensorService implements OnModuleInit {
           </div>
         </div>
         <div style="background-color: #f9fafb; padding: 14px; text-align: center; font-size: 11px; color: #6b7280; border-top: 1px solid #f0f0f0;">
-          Email tự động gửi tới Cán bộ Quản lý Đập ${effectiveDamId}.
+          Email tự động gửi tới Cán bộ Quản lý Đập ${esc(effectiveDamId)}.
         </div>
       </div>
     `;

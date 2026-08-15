@@ -33,6 +33,9 @@ export class User {
   @Column({ type: 'varchar', length: 64, nullable: true })
   assignedDamId: string;
 
+  @Column({ type: 'boolean', default: false })
+  mustChangePassword: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   lastLoginAt: Date;
 

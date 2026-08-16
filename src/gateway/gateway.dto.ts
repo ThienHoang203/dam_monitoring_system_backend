@@ -1,8 +1,11 @@
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 
 export class CreateGatewayDto {
+  // Mã gateway theo chuẩn GTW-[STATION_CODE]-[SEQ_ID].
+  // Bỏ trống thì backend tự sinh từ STATION_CODE của trạm được chọn.
+  @IsOptional()
   @IsString()
-  id: string;
+  gatewayId?: string;
 
   @IsString()
   name: string;
@@ -18,8 +21,9 @@ export class CreateGatewayDto {
   @IsString()
   description?: string;
 
-  @IsNumber()
-  stationId: number;
+  // Mã trạm cha (STA-001-01) — service tự resolve sang khóa chính.
+  @IsString()
+  stationId: string;
 }
 
 export class UpdateGatewayDto {
@@ -44,6 +48,6 @@ export class UpdateGatewayDto {
   status?: string;
 
   @IsOptional()
-  @IsNumber()
-  stationId?: number;
+  @IsString()
+  stationId?: string;
 }

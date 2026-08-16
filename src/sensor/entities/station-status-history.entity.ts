@@ -11,9 +11,10 @@ export class StationStatusHistory {
   @Column({ type: 'varchar', length: 16 })
   level: string; // 'station' | 'dam'
 
+  // Mã trạm (STA-001-01) — phi chuẩn hóa, KHÔNG đặt khóa ngoại (bản ghi lịch sử).
   @Index()
-  @Column({ type: 'integer', nullable: true })
-  stationId: number | null;
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  stationId: string | null;
 
   @Index()
   @Column({ type: 'varchar', length: 64 })

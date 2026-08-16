@@ -4,10 +4,11 @@ import { Gateway } from './entities/gateway.entity';
 import { GatewayService } from './gateway.service';
 import { GatewayController } from './gateway.controller';
 import { CameraModule } from '../camera/camera.module';
+import { Station } from '../dam/entities/station.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Gateway]),
+    TypeOrmModule.forFeature([Gateway, Station]),
     forwardRef(() => CameraModule),
   ],
   controllers: [GatewayController],

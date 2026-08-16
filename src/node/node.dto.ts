@@ -1,9 +1,10 @@
 import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateNodeDto {
+  // Mã node theo chuẩn NOD-[GW_SEQ]-ESP[SEQ], gắn theo Gateway. Bỏ trống thì backend tự sinh.
   @IsOptional()
   @IsString()
-  id?: string;
+  nodeId?: string;
 
   @IsString()
   name: string;
@@ -56,9 +57,10 @@ export class CreateNodeDto {
   @IsString()
   gatewayId?: string;
 
+  // Mã trạm cha (STA-001-01) — service tự resolve sang gateway tương ứng.
   @IsOptional()
-  @IsNumber()
-  stationId?: number;
+  @IsString()
+  stationId?: string;
 
   @IsOptional()
   @IsString()
@@ -122,9 +124,10 @@ export class UpdateNodeDto {
   @IsString()
   gatewayId?: string;
 
+  // Mã trạm cha (STA-001-01) — service tự resolve sang gateway tương ứng.
   @IsOptional()
-  @IsNumber()
-  stationId?: number;
+  @IsString()
+  stationId?: string;
 
   @IsOptional()
   @IsString()
@@ -132,9 +135,18 @@ export class UpdateNodeDto {
 }
 
 export class CreateSensorDto {
+  // Mã cảm biến theo chuẩn SNR-[SENSOR_TYPE]-[NODE_SEQ]-[PORT].
+  // Bỏ trống thì backend tự sinh từ loại cảm biến + mã node + cổng.
+  @IsOptional()
   @IsString()
-  id: string;
+  sensorId?: string;
 
+  // Cổng phần cứng dùng trong mã (I2C1, ADC1...). Bỏ trống thì sinh P01, P02...
+  @IsOptional()
+  @IsString()
+  port?: string;
+
+  // Chấp nhận cả mã chuẩn (VIB/WTL/MST...) lẫn tên dài (vibration/water_level/humidity).
   @IsString()
   sensorType: string;
 

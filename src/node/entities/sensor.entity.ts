@@ -1,17 +1,25 @@
 import {
   Entity,
   Column,
-  PrimaryColumn,
+  PrimaryGeneratedColumn,
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
+  AfterLoad,
 } from 'typeorm';
 import { Node } from './node.entity';
 
 @Entity('sensors')
 export class Sensor {
-  @PrimaryColumn({ type: 'varchar', length: 64 })
-  id: string; // SNR-VIB-ESP01-I2C1
+  // Khóa chính kỹ thuật — chỉ dùng nội bộ cho JOIN/khóa ngoại, không lộ ra API/MQTT.
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  // Mã cảm biến theo quy tắc A.3.2: SNR-[SENSOR_TYPE]-[NODE_SEQ]-[PORT] (vd SNR-VIB-ESP01-I2C1).
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64 })
+  sensorId: string;
 
   @Column({ type: 'varchar', length: 16 })
   sensorType: string; // VIB | TLT | WTL | MST | US
@@ -28,13 +36,22 @@ export class Sensor {
   @Column({ type: 'float', nullable: true })
   calibrationOffset: number;
 
-  @Column({ type: 'varchar', length: 64 })
-  nodeId: string;
+  // Khóa ngoại trỏ vào Node.id (khóa chính kỹ thuật).
+  @Column({ type: 'int' })
+  nodeRefId: number;
 
   @ManyToOne(() => Node, (node) => node.sensors, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'nodeId' })
+  @JoinColumn({ name: 'nodeRefId' })
   node: Node;
 
   @CreateDateColumn()
   createdAt: Date;
+
+  /** Trường ảo — mã node cha; chỉ có giá trị khi quan hệ `node` được load. */
+  nodeId?: string;
+
+  @AfterLoad()
+  hydrateParentCodes() {
+    this.nodeId = this.node?.nodeId;
+  }
 }

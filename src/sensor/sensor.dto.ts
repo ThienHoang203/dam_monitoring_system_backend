@@ -6,12 +6,12 @@ export class SensorDataDto {
   clusterId?: string;  // ID cụm cảm biến (backward compatible, fallback 'sensor_node_1')
 
   @IsOptional()
-  @IsNumber()
-  stationId?: number;  // ID trạm liên kết với cụm cảm biến
+  @IsString()
+  stationId?: string;  // Mã trạm liên kết với cụm cảm biến (STA-001-01)
 
   @IsOptional()
   @IsString()
-  damId?: string;      // ID đập (backward compatible, fallback 'dam_1')
+  damId?: string;      // Mã đập (DAM-001)
 
   @IsNumber()
   freq: number;
@@ -36,7 +36,7 @@ export class SensorDataDto {
     moisture: number,
     percent?: number,
     clusterId?: string,
-    stationId?: number,
+    stationId?: string,
     damId?: string,
   ) {
     this.freq = freq;
@@ -51,7 +51,7 @@ export class SensorDataDto {
 }
 
 export interface SensorSnapshot extends SensorDataDto {
-  stationId?: number;
+  stationId?: string;
   percent: number;
   timestamp: string;
 }
@@ -67,7 +67,7 @@ export interface SensorHistory {
 
 export interface StationStatusChangeEvent {
   level: 'station' | 'dam';
-  stationId?: number;
+  stationId?: string;
   damId: string;
   status: string; // 'safe' | 'warning' | 'danger' | 'critical' | 'unknown'
   statusReason?: string;

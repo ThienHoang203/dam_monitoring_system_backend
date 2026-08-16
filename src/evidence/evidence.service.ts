@@ -8,8 +8,8 @@ import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
 import * as Minio from 'minio';
 
-const DEFAULT_DAM_ID = 'dam_1';
-const DEFAULT_NODE_ID = 'NOD-ST01-ESP01';
+const DEFAULT_DAM_ID = 'DAM-001';
+const DEFAULT_NODE_ID = 'NOD-GW01-ESP01';
 
 @Injectable()
 export class EvidenceService implements OnModuleInit {
@@ -158,14 +158,14 @@ export class EvidenceService implements OnModuleInit {
     if (gatewayId) {
       try {
         const gw = await this.gatewayRepo.findOne({
-          where: { id: gatewayId },
-          relations: { station: true, nodes: true },
+          where: { gatewayId },
+          relations: { station: { dam: true }, nodes: true },
         });
         if (gw?.station?.damId) {
           targetDamId = gw.station.damId;
         }
         if (!nodeId && gw?.nodes && gw.nodes.length > 0) {
-          targetSensorId = gw.nodes[0].id;
+          targetSensorId = gw.nodes[0].nodeId;
           if (gw.nodes[0].vibrationThreshold != null) {
             targetThreshold = gw.nodes[0].vibrationThreshold;
           }
@@ -178,8 +178,8 @@ export class EvidenceService implements OnModuleInit {
     if (nodeId && targetDamId === DEFAULT_DAM_ID) {
       try {
         const node = await this.nodeRepo.findOne({
-          where: { id: nodeId },
-          relations: { gateway: { station: true } },
+          where: { nodeId },
+          relations: { gateway: { station: { dam: true } } },
         });
         if (node?.gateway?.station?.damId) {
           targetDamId = node.gateway.station.damId;

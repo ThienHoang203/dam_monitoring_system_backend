@@ -10,6 +10,7 @@ import { BadRequestException } from '@nestjs/common';
 
 export const ID_PATTERNS = {
   DAM: /^DAM-\d{3}$/,
+  STATION: /^STA-\d{3}-\d{2}$/,
   GATEWAY: /^GTW-[A-Z0-9]+-[A-Z0-9]+$/,
   NODE: /^NOD-[A-Z0-9]+-[A-Z0-9]+$/,
   SENSOR: /^SNR-(VIB|TLT|WTL|MST|US)-[A-Z0-9]+-[A-Z0-9]+$/,
@@ -34,6 +35,34 @@ export function validateDeviceId(
     throw new BadRequestException(
       `ID "${id}" không đúng chuẩn ${type}. Format yêu cầu: ${ID_PATTERNS[type].source}`,
     );
+  }
+}
+
+/**
+ * Quy đổi tên loại cảm biến dạng dài mà UI/MQTT hay dùng ('water_level', 'humidity',
+ * 'vibration'...) về mã 3 ký tự của chuẩn A.3.2. Mã hợp lệ sẵn thì giữ nguyên.
+ * Trả lại nguyên chuỗi nếu không nhận ra, để validateSensorType() báo lỗi rõ ràng.
+ */
+export function normalizeSensorType(type: string): string {
+  const t = (type || '').trim().toUpperCase();
+  if (SENSOR_TYPE_CODES.includes(t as SensorTypeCode)) return t;
+
+  switch (t) {
+    case 'VIBRATION':
+      return 'VIB';
+    case 'TILT':
+      return 'TLT';
+    case 'WATER_LEVEL':
+    case 'WATERLEVEL':
+    case 'WATER':
+      return 'WTL';
+    case 'MOISTURE':
+    case 'HUMIDITY':
+      return 'MST';
+    case 'ULTRASONIC':
+      return 'US';
+    default:
+      return t;
   }
 }
 

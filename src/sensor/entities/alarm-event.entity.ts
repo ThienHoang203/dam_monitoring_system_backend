@@ -44,8 +44,10 @@ export class AlarmEvent {
   @Column({ type: 'text', nullable: true })
   imageUrl: string; // URL MinIO
 
-  @Column({ type: 'integer', nullable: true })
-  stationId: number;
+  // Mã trạm (STA-001-01) — phi chuẩn hóa, KHÔNG đặt khóa ngoại: bản ghi sự cố phải
+  // sống sót khi trạm bị xóa khỏi danh mục thiết bị.
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  stationId: string;
 
   @Column({ type: 'varchar', length: 200, nullable: true })
   stationName: string;

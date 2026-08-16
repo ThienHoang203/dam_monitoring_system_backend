@@ -7,7 +7,6 @@ import {
   Body,
   Param,
   Query,
-  ParseIntPipe,
   ForbiddenException,
   UseGuards,
 } from '@nestjs/common';
@@ -31,7 +30,7 @@ export class DamController {
     let dams = await this.damService.findAllDams();
     // Nếu là Cán bộ OPERATOR có gán đập cụ thể -> Chỉ hiển thị đập được phân công
     if (user?.role === 'OPERATOR' && user?.assignedDamId) {
-      dams = dams.filter(d => d.id === user.assignedDamId);
+      dams = dams.filter(d => d.damId === user.assignedDamId);
     }
     return { dams };
   }
@@ -84,7 +83,7 @@ export class DamController {
   @Public()
   @Get('stations/:id')
   @UseGuards(OptionalJwtAuthGuard)
-  async findStationById(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: User) {
+  async findStationById(@Param('id') id: string, @CurrentUser() user?: User) {
     const station = await this.damService.findStationById(id);
     if (user?.role === 'OPERATOR' && user?.assignedDamId && station.damId !== user.assignedDamId) {
       throw new ForbiddenException('Bạn không có quyền truy cập trạm quan trắc của đập này');
@@ -102,7 +101,7 @@ export class DamController {
   @Put('stations/:id')
   @Roles('ADMIN')
   async updateStation(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') id: string,
     @Body() dto: UpdateStationDto,
   ) {
     const station = await this.damService.updateStation(id, dto);
@@ -111,7 +110,7 @@ export class DamController {
 
   @Delete('stations/:id')
   @Roles('ADMIN')
-  async deleteStation(@Param('id', ParseIntPipe) id: number) {
+  async deleteStation(@Param('id') id: string) {
     return this.damService.deleteStation(id);
   }
 }

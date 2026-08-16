@@ -1,12 +1,14 @@
 import {
   Entity,
   Column,
-  PrimaryColumn,
+  PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
   OneToMany,
   JoinColumn,
+  Index,
+  AfterLoad,
 } from 'typeorm';
 import { Station } from '../../dam/entities/station.entity';
 import { Camera } from '../../camera/entities/camera.entity';
@@ -14,8 +16,14 @@ import { Node } from '../../node/entities/node.entity';
 
 @Entity('gateways')
 export class Gateway {
-  @PrimaryColumn({ type: 'varchar', length: 64 })
-  id: string; // GTW-ST01-TX2A
+  // Khóa chính kỹ thuật — chỉ dùng nội bộ cho JOIN/khóa ngoại, không lộ ra API/MQTT.
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  // Mã gateway theo quy tắc A.3.2: GTW-[STATION_CODE]-[SEQ_ID] (vd GTW-ST01-TX2A).
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64 })
+  gatewayId: string;
 
   @Column({ type: 'varchar', length: 200 })
   name: string;
@@ -35,11 +43,12 @@ export class Gateway {
   @Column({ type: 'timestamptz', nullable: true })
   lastSeenAt: Date;
 
-  @Column({ type: 'integer' })
-  stationId: number;
+  // Khóa ngoại trỏ vào Station.id (khóa chính kỹ thuật).
+  @Column({ type: 'int' })
+  stationRefId: number;
 
   @ManyToOne(() => Station, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'stationId' })
+  @JoinColumn({ name: 'stationRefId' })
   station: Station;
 
   @OneToMany(() => Camera, (camera) => camera.gateway, { cascade: true })
@@ -53,4 +62,12 @@ export class Gateway {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  /** Trường ảo — mã trạm cha; chỉ có giá trị khi quan hệ `station` được load. */
+  stationId?: string;
+
+  @AfterLoad()
+  hydrateParentCodes() {
+    this.stationId = this.station?.stationId;
+  }
 }

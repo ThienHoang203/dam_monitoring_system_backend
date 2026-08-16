@@ -26,20 +26,39 @@ export class CameraService {
   ) {}
 
   async findAll(gatewayId?: string): Promise<Camera[]> {
-    const where: any = {};
-    if (gatewayId) where.gatewayId = gatewayId;
-    return this.cameraRepo.find({ where, order: { createdAt: 'ASC' } });
+    return this.cameraRepo.find({
+      where: gatewayId ? { gateway: { gatewayId } } : {},
+      relations: { gateway: true },
+      order: { createdAt: 'ASC' },
+    });
   }
 
-  async findById(id: string): Promise<Camera> {
-    const camera = await this.cameraRepo.findOne({ where: { id } });
-    if (!camera) throw new NotFoundException(`Camera "${id}" không tồn tại.`);
+  async findById(cameraId: string): Promise<Camera> {
+    const camera = await this.cameraRepo.findOne({
+      where: { cameraId },
+      relations: { gateway: true },
+    });
+    if (!camera) throw new NotFoundException(`Camera "${cameraId}" không tồn tại.`);
     return camera;
   }
 
+  /**
+   * Sinh mã camera CAM-[CAM_TYPE]-[STATION_CODE]-[SEQ_ID] theo chuẩn A.3.2.
+   * SEQ_ID đánh số trong phạm vi STATION_CODE (mã đã mang sẵn trạm, không phải gateway).
+   */
+  private async nextCameraId(stationCode: string, cameraType: string): Promise<string> {
+    const prefix = `CAM-${cameraType}-${stationCode}-`;
+    const siblings = await this.cameraRepo.find({ select: { cameraId: true } });
+    let max = 0;
+    for (const c of siblings) {
+      if (!c.cameraId?.startsWith(prefix)) continue;
+      const seq = parseInt(c.cameraId.slice(prefix.length), 10);
+      if (!isNaN(seq)) max = Math.max(max, seq);
+    }
+    return `${prefix}${String(max + 1).padStart(2, '0')}`;
+  }
+
   async create(dto: CreateCameraDto): Promise<Camera> {
-    // Validate naming convention
-    validateDeviceId('CAMERA', dto.id);
     validateCameraType(dto.cameraType);
 
     // Enforce: IP camera requires stream_url
@@ -49,22 +68,35 @@ export class CameraService {
       );
     }
 
-    // Check duplicate
-    const existing = await this.cameraRepo.findOne({ where: { id: dto.id } });
+    const { gatewayId, cameraId: requestedId, ...rest } = dto;
+    const gateway = await this.gatewayService.findById(gatewayId);
+
+    const stationCode =
+      gateway.station?.stationCode || `ST${String(gateway.stationRefId).padStart(2, '0')}`;
+    const cameraId =
+      requestedId?.trim() || (await this.nextCameraId(stationCode, dto.cameraType));
+    validateDeviceId('CAMERA', cameraId);
+
+    const existing = await this.cameraRepo.findOne({ where: { cameraId } });
     if (existing) {
       throw new ConflictException(
-        `Camera "${dto.id}" đã tồn tại trên hệ thống.`,
+        `Camera "${cameraId}" đã tồn tại trên hệ thống.`,
       );
     }
 
-    const camera = this.cameraRepo.create(dto);
-    const saved = await this.cameraRepo.save(camera);
-    this.gatewayService.publishGatewayConfig(saved.gatewayId).catch(() => {});
+    const camera = this.cameraRepo.create({
+      ...rest,
+      cameraId,
+      gatewayRefId: gateway.id,
+    });
+    await this.cameraRepo.save(camera);
+    const saved = await this.findById(cameraId);
+    this.gatewayService.publishGatewayConfig(gatewayId).catch(() => {});
     return saved;
   }
 
-  async update(id: string, dto: UpdateCameraDto): Promise<Camera> {
-    const existing = await this.findById(id);
+  async update(cameraId: string, dto: UpdateCameraDto): Promise<Camera> {
+    const existing = await this.findById(cameraId);
 
     // Enforce: IP camera requires stream_url (either already set or provided now)
     const effectiveStreamUrl = dto.streamUrl !== undefined ? dto.streamUrl : existing.streamUrl;
@@ -74,16 +106,29 @@ export class CameraService {
       );
     }
 
-    await this.cameraRepo.update(id, dto);
-    const updated = await this.findById(id);
-    this.gatewayService.publishGatewayConfig(updated.gatewayId).catch(() => {});
+    const { gatewayId, ...rest } = dto;
+    const updateData: Partial<Camera> = { ...rest };
+    if (gatewayId && gatewayId !== existing.gatewayId) {
+      updateData.gatewayRefId = (await this.gatewayService.findById(gatewayId)).id;
+    }
+
+    await this.cameraRepo.update({ cameraId }, updateData);
+    const updated = await this.findById(cameraId);
+
+    // Camera đổi gateway -> cả gateway cũ lẫn mới đều phải nhận lại config.
+    for (const gw of new Set([existing.gatewayId, updated.gatewayId].filter(Boolean))) {
+      this.gatewayService.publishGatewayConfig(gw as string).catch(() => {});
+    }
     return updated;
   }
 
-  async delete(id: string): Promise<{ ok: boolean }> {
-    const camera = await this.findById(id);
+  async delete(cameraId: string): Promise<{ ok: boolean }> {
+    const camera = await this.findById(cameraId);
+    const gatewayId = camera.gatewayId;
     await this.cameraRepo.remove(camera);
-    this.gatewayService.publishGatewayConfig(camera.gatewayId).catch(() => {});
+    if (gatewayId) {
+      this.gatewayService.publishGatewayConfig(gatewayId).catch(() => {});
+    }
     return { ok: true };
   }
 }

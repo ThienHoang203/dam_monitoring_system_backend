@@ -1,9 +1,10 @@
 import { IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateDamDto {
+  // Mã đập theo chuẩn DAM-[XXX]. Bỏ trống thì backend tự sinh số thứ tự kế tiếp.
   @IsOptional()
   @IsString()
-  id?: string;
+  damId?: string;
 
   @IsString()
   name: string;
@@ -80,6 +81,16 @@ export class UpdateDamDto {
 }
 
 export class CreateStationDto {
+  // Mã trạm theo chuẩn STA-[DAM_CODE]-[XX]. Bỏ trống thì backend tự sinh từ mã đập cha.
+  @IsOptional()
+  @IsString()
+  stationId?: string;
+
+  // Mã ngắn dùng nhúng vào id gateway/node (ST01, ST02...). Bỏ trống thì backend tự sinh.
+  @IsOptional()
+  @IsString()
+  stationCode?: string;
+
   @IsString()
   name: string;
 

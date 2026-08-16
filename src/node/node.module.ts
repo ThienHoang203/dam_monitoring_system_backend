@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Node } from './entities/node.entity';
 import { Sensor } from './entities/sensor.entity';
 import { ThresholdConfig } from '../sensor/entities/threshold-config.entity';
+import { Station } from '../dam/entities/station.entity';
 import { NodeService } from './node.service';
 import { NodeController } from './node.controller';
 import { GatewayModule } from '../gateway/gateway.module';
@@ -11,7 +12,7 @@ import { CameraModule } from '../camera/camera.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Node, Sensor, ThresholdConfig]),
+    TypeOrmModule.forFeature([Node, Sensor, ThresholdConfig, Station]),
     GatewayModule,
     SensorModule,
     CameraModule,

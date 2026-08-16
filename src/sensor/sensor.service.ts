@@ -20,7 +20,8 @@ import { AuditLogService } from '../audit-log/audit-log.service';
 import * as nodemailer from 'nodemailer';
 
 const MAX_HISTORY = 60;
-const DEFAULT_DAM_ID = 'dam_1';
+const DEFAULT_DAM_ID = 'DAM-001';
+const DEFAULT_STATION_ID = 'STA-001-01';
 // Sau chừng này ms không nhận tin phân loại rung động mới từ Jetson TX2, coi tín hiệu đó là cũ (STALE)
 // và không tính vào worst-case của Station nữa — tránh "đóng băng" severity khi Jetson mất kết nối.
 const VIBRATION_SIGNAL_TTL_MS = 30_000;
@@ -33,12 +34,14 @@ const BACKEND_ALARM_SENSOR_TYPES = ['water_level', 'humidity'] as const;
 
 @Injectable()
 export class SensorService implements OnModuleInit {
+  // LƯU Ý: mọi cache dưới đây khoá theo MÃ trạm (STA-001-01), không phải khoá chính kỹ thuật —
+  // khoá chính số chỉ tồn tại trong DB, không lộ ra API/WebSocket/MQTT.
   private latest: SensorSnapshot | null = null;
-  private latestByStation: Map<number, SensorSnapshot> = new Map();
+  private latestByStation: Map<string, SensorSnapshot> = new Map();
   private latestByNode: Map<string, SensorSnapshot> = new Map();
 
   private thresholdConfigCache: Map<string, ThresholdConfig[]> = new Map();
-  private stationDeviceCache: Map<string, { stationId: number; damId: string }> = new Map();
+  private stationDeviceCache: Map<string, { stationId: string; damId: string }> = new Map();
 
   private latestVibrationStatusByNode: Map<string, any> = new Map();
 
@@ -47,24 +50,24 @@ export class SensorService implements OnModuleInit {
     amp: number;
     waterLevel: number;
     moisture: number;
-    stationId?: number;
+    stationId?: string;
     damId?: string;
   }> = new Map();
 
   // ── Trạng thái an toàn tổng hợp Station/Dam ──────────────────────
   // Node -> Station chứa nó, Station -> Đập chứa nó (dùng để "worst-case wins" khi tổng hợp).
-  private nodeIdsByStation: Map<number, Set<string>> = new Map();
-  private stationIdsByDam: Map<string, Set<number>> = new Map();
-  private nodeStationIndex: Map<string, number> = new Map();
+  private nodeIdsByStation: Map<string, Set<string>> = new Map();
+  private stationIdsByDam: Map<string, Set<string>> = new Map();
+  private nodeStationIndex: Map<string, string> = new Map();
 
   // Severity cao nhất trong các AlarmEvent CHƯA resolve của một Station (do Jetson TX2 phát hiện).
-  private openAlarmSeverityByStation: Map<number, Severity> = new Map();
+  private openAlarmSeverityByStation: Map<string, Severity> = new Map();
 
   // Severity đã tính gần nhất — dùng để chỉ ghi DB/broadcast khi thực sự đổi mức.
   // null = đã tính nhưng không có tín hiệu tươi nào ("unknown"); entry vắng mặt = chưa từng tính.
-  private stationSeverityCache: Map<number, Severity | null> = new Map();
+  private stationSeverityCache: Map<string, Severity | null> = new Map();
   private damSeverityCache: Map<string, Severity | null> = new Map();
-  private stationReasonCache: Map<number, string> = new Map();
+  private stationReasonCache: Map<string, string> = new Map();
   private damReasonCache: Map<string, string> = new Map();
 
   private pendingStatusChanges: StationStatusChangeEvent[] = [];
@@ -90,7 +93,7 @@ export class SensorService implements OnModuleInit {
     percent: [],
   };
 
-  private historyByStation: Map<number, SensorHistory> = new Map();
+  private historyByStation: Map<string, SensorHistory> = new Map();
 
   constructor(
     @InjectRepository(SensorReading)
@@ -126,7 +129,7 @@ export class SensorService implements OnModuleInit {
     // không hề có ThresholdConfig nào, khiến nước/độ ẩm không bao giờ cảnh báo
     // và form sửa ngưỡng lưu không ăn (không có bản ghi để update).
     const dams = await this.damRepo.find();
-    const damIds = dams.length > 0 ? dams.map(d => d.id) : [DEFAULT_DAM_ID];
+    const damIds = dams.length > 0 ? dams.map(d => d.damId) : [DEFAULT_DAM_ID];
     for (const damId of damIds) {
       await this.ensureThresholdConfigs(damId);
     }
@@ -203,7 +206,7 @@ export class SensorService implements OnModuleInit {
       }
       this.thresholdConfigCache = grouped;
 
-      const knownStationIds = await this.syncTopologyFromDb();
+      const knownStationIds: Set<string> = await this.syncTopologyFromDb();
 
       // Nạp lại các AlarmEvent còn chưa resolve để không "quên" sự cố đang diễn ra khi restart.
       const openAlarms = await this.alarmEventRepo.find({ where: { resolvedAt: IsNull() } });
@@ -237,8 +240,8 @@ export class SensorService implements OnModuleInit {
    * (stationDeviceCache, stationIdsByDam, nodeIdsByStation). Dùng lúc khởi động (preloadCache)
    * VÀ định kỳ (resyncTopology) để tự phục hồi nếu có điểm đăng ký nào đó bị bỏ sót lúc runtime.
    */
-  async syncTopologyFromDb(): Promise<Set<number>> {
-    const knownStationIds = new Set<number>();
+  async syncTopologyFromDb(): Promise<Set<string>> {
+    const knownStationIds = new Set<string>();
 
     // Xoá trắng các cache mapping trước khi đồng bộ lại từ CSDL
     this.stationDeviceCache.clear();
@@ -246,10 +249,10 @@ export class SensorService implements OnModuleInit {
     this.nodeIdsByStation.clear();
     this.stationIdsByDam.clear();
 
-    const gateways = await this.gatewayRepo.find({ relations: { station: true } });
+    const gateways = await this.gatewayRepo.find({ relations: { station: { dam: true } } });
     for (const gw of gateways) {
       if (gw.stationId) {
-        this.stationDeviceCache.set(gw.id, {
+        this.stationDeviceCache.set(gw.gatewayId, {
           stationId: gw.stationId,
           damId: gw.station?.damId || DEFAULT_DAM_ID,
         });
@@ -257,22 +260,22 @@ export class SensorService implements OnModuleInit {
     }
 
     // Đăng ký Station -> Dam cho TẤT CẢ Station (kể cả Station chưa gắn Gateway/Node nào),
-    // vì đây là dữ kiện thuần từ Station.damId, không phụ thuộc phần cứng.
-    const allStations = await this.stationRepo.find();
+    // vì đây là dữ kiện thuần từ quan hệ Station -> Dam, không phụ thuộc phần cứng.
+    const allStations = await this.stationRepo.find({ relations: { dam: true } });
     for (const station of allStations) {
-      this.registerStationDam(station.id, station.damId || DEFAULT_DAM_ID);
-      knownStationIds.add(station.id);
+      this.registerStationDam(station.stationId, station.damId || DEFAULT_DAM_ID);
+      knownStationIds.add(station.stationId);
     }
 
-    const nodes = await this.nodeRepo.find({ relations: { gateway: { station: true } } });
+    const nodes = await this.nodeRepo.find({ relations: { gateway: { station: { dam: true } } } });
     for (const node of nodes) {
       if (node.gateway && node.gateway.stationId) {
         const damId = node.gateway.station?.damId || DEFAULT_DAM_ID;
-        this.stationDeviceCache.set(node.id, {
+        this.stationDeviceCache.set(node.nodeId, {
           stationId: node.gateway.stationId,
           damId,
         });
-        this.registerNodeStation(node.id, node.gateway.stationId, damId);
+        this.registerNodeStation(node.nodeId, node.gateway.stationId, damId);
         knownStationIds.add(node.gateway.stationId);
       }
     }
@@ -303,9 +306,9 @@ export class SensorService implements OnModuleInit {
    * Đăng ký/hoạn Node thuộc Station nào, Station thuộc Dam nào — dùng để tổng hợp
    * severity theo cây phân cấp Node -> Station -> Dam (worst-case wins).
    */
-  private registerNodeStation(nodeId: string, stationId: number, damId: string) {
+  private registerNodeStation(nodeId: string, stationId: string, damId: string) {
     const prevStationId = this.nodeStationIndex.get(nodeId);
-    if (prevStationId != null && prevStationId !== stationId) {
+    if (prevStationId && prevStationId !== stationId) {
       this.nodeIdsByStation.get(prevStationId)?.delete(nodeId);
     }
     this.nodeStationIndex.set(nodeId, stationId);
@@ -321,7 +324,7 @@ export class SensorService implements OnModuleInit {
    * (kể cả Station không gắn Gateway/Node vật lý nào). Dùng bởi recomputeDamStatus/recomputeDamWaterLevel
    * để tổng hợp severity/waterLevel cấp Dam — phải gọi cho mọi Station, không chỉ Station có phần cứng.
    */
-  registerStationDam(stationId: number, damId: string) {
+  registerStationDam(stationId: string, damId: string) {
     if (!this.stationIdsByDam.has(damId)) this.stationIdsByDam.set(damId, new Set());
     this.stationIdsByDam.get(damId)!.add(stationId);
   }
@@ -329,15 +332,12 @@ export class SensorService implements OnModuleInit {
   /**
    * Kiểm tra Trạm có đang kết nối với ít nhất 1 Sensor Node (online và có tín hiệu < 30s) hay không.
    */
-  async isStationNodeConnected(stationId: number): Promise<boolean> {
+  async isStationNodeConnected(stationId: string): Promise<boolean> {
     const TIMEOUT_MS = 30_000;
     const now = Date.now();
 
     // 0. Kiểm tra trực tiếp trong CSDL xem trạm có bất kỳ Sensor Node nào gắn kèm không
-    const nodeCount = await this.nodeRepo.createQueryBuilder('node')
-      .innerJoin('node.gateway', 'gw')
-      .where('gw.stationId = :stationId', { stationId })
-      .getCount();
+    const nodeCount = await this.countNodesOfStation(stationId);
 
     if (nodeCount === 0) {
       // Trạm không gắn bất kỳ Sensor Node nào -> Xoá sạch snapshot / history / index trong bộ nhớ
@@ -360,7 +360,7 @@ export class SensorService implements OnModuleInit {
     const nodeIds = this.nodeIdsByStation.get(stationId);
     if (nodeIds && nodeIds.size > 0) {
       const nodes = await this.nodeRepo.find({
-        where: { id: In(Array.from(nodeIds)) },
+        where: { nodeId: In(Array.from(nodeIds)) },
       });
       const hasOnlineNode = nodes.some(
         n => n.status === 'online' && n.lastSeenAt && (now - new Date(n.lastSeenAt).getTime() <= TIMEOUT_MS),
@@ -368,15 +368,25 @@ export class SensorService implements OnModuleInit {
       if (hasOnlineNode) return true;
     }
 
-    // 3. Truy vấn trực tiếp DB qua quan hệ Gateway -> Node
+    // 3. Truy vấn trực tiếp DB qua quan hệ Gateway -> Station
     const onlineNodeInDb = await this.nodeRepo.createQueryBuilder('node')
       .innerJoin('node.gateway', 'gw')
-      .where('gw.stationId = :stationId', { stationId })
+      .innerJoin('gw.station', 'st')
+      .where('st.stationId = :stationId', { stationId })
       .andWhere('node.status = :status', { status: 'online' })
       .andWhere('node.lastSeenAt >= :threshold', { threshold: new Date(now - TIMEOUT_MS) })
       .getOne();
 
     return !!onlineNodeInDb;
+  }
+
+  /** Đếm số Sensor Node đang gắn vào một Trạm (theo mã trạm). */
+  private async countNodesOfStation(stationId: string): Promise<number> {
+    return this.nodeRepo.createQueryBuilder('node')
+      .innerJoin('node.gateway', 'gw')
+      .innerJoin('gw.station', 'st')
+      .where('st.stationId = :stationId', { stationId })
+      .getCount();
   }
 
   /**
@@ -386,13 +396,13 @@ export class SensorService implements OnModuleInit {
     let stationId = this.nodeStationIndex.get(nodeId);
     if (!stationId) {
       const node = await this.nodeRepo.findOne({
-        where: { id: nodeId },
-        relations: { gateway: true },
+        where: { nodeId },
+        relations: { gateway: { station: true } },
       });
       stationId = node?.gateway?.stationId;
     }
 
-    if (stationId != null) {
+    if (stationId) {
       await this.recomputeStationStatus(stationId);
     }
   }
@@ -406,7 +416,7 @@ export class SensorService implements OnModuleInit {
    *   3. AlarmEvent (sự cố/vết nứt do AI phát hiện) chưa resolve
    * Chỉ ghi DB & xếp hàng broadcast khi mức severity thực sự thay đổi.
    */
-  async recomputeStationStatus(stationId: number): Promise<void> {
+  async recomputeStationStatus(stationId: string): Promise<void> {
     const snapshot = this.latestByStation.get(stationId);
     const damId = snapshot?.damId
       || Array.from(this.stationIdsByDam.entries()).find(([, ids]) => ids.has(stationId))?.[0]
@@ -416,10 +426,7 @@ export class SensorService implements OnModuleInit {
     const isConnected = await this.isStationNodeConnected(stationId);
     if (!isConnected) {
       const worst: Severity | null = null;
-      const nodeCount = await this.nodeRepo.createQueryBuilder('node')
-        .innerJoin('node.gateway', 'gw')
-        .where('gw.stationId = :stationId', { stationId })
-        .getCount();
+      const nodeCount = await this.countNodesOfStation(stationId);
 
       const statusReason = (nodeCount === 0)
         ? 'Chưa gắn Sensor Node vào trạm'
@@ -434,7 +441,7 @@ export class SensorService implements OnModuleInit {
       const status = severityToStatus(worst); // 'unknown'
 
       // Cập nhật DB: Nếu chưa có node nào gắn vào trạm, reset các số đo về 0
-      await this.stationRepo.update(stationId, {
+      await this.stationRepo.update({ stationId }, {
         status,
         statusReason,
         ...(nodeCount === 0 ? { waterLevel: 0, humidity: 0, vibration: 0, change: 0 } : {}),
@@ -537,7 +544,7 @@ export class SensorService implements OnModuleInit {
     this.stationSeverityCache.set(stationId, worst);
     this.stationReasonCache.set(stationId, statusReason);
     const status = severityToStatus(worst);
-    await this.stationRepo.update(stationId, { status, statusReason }).catch(() => { });
+    await this.stationRepo.update({ stationId }, { status, statusReason }).catch(() => { });
 
     this.statusHistoryRepo.save({
       level: 'station',
@@ -587,8 +594,8 @@ export class SensorService implements OnModuleInit {
         for (const sid of stationIds) {
           if (this.stationSeverityCache.get(sid) === worst) {
             const stReason = this.stationReasonCache.get(sid);
-            const stObj = await this.stationRepo.findOne({ where: { id: sid } }).catch(() => null);
-            const stName = stObj?.name || `Trạm #${sid}`;
+            const stObj = await this.stationRepo.findOne({ where: { stationId: sid } }).catch(() => null);
+            const stName = stObj?.name || `Trạm ${sid}`;
             triggeringReasons.push(`${stName} (${stReason || severityToStatus(worst)})`);
           }
         }
@@ -606,7 +613,7 @@ export class SensorService implements OnModuleInit {
     this.damSeverityCache.set(damId, worst);
     this.damReasonCache.set(damId, damReason);
     const status = severityToStatus(worst);
-    await this.damRepo.update(damId, { status, statusReason: damReason }).catch(() => { });
+    await this.damRepo.update({ damId }, { status, statusReason: damReason }).catch(() => { });
 
     this.statusHistoryRepo.save({
       level: 'dam',
@@ -630,7 +637,7 @@ export class SensorService implements OnModuleInit {
 
   // Lấy lịch sử thay đổi trạng thái an toàn (audit trail) cho Station/Dam.
   async getStatusHistory(params: {
-    stationId?: number;
+    stationId?: string;
     damId?: string;
     level?: 'station' | 'dam';
     limit?: number;
@@ -639,7 +646,7 @@ export class SensorService implements OnModuleInit {
       .orderBy('h.changedAt', 'DESC')
       .take(params.limit || 50);
 
-    if (params.stationId != null) {
+    if (params.stationId) {
       qb.andWhere('h.stationId = :stationId', { stationId: params.stationId });
     }
     if (params.damId && params.damId !== 'all') {
@@ -653,7 +660,7 @@ export class SensorService implements OnModuleInit {
   }
 
   // Tính lại severity cao nhất trong các AlarmEvent chưa resolve của một Station.
-  private async refreshOpenAlarmSeverity(stationId: number): Promise<void> {
+  private async refreshOpenAlarmSeverity(stationId: string): Promise<void> {
     // CHỈ tính alarm rung động/vết nứt của Jetson. Alarm nước/độ ẩm do backend sinh KHÔNG được
     // đẩy vào đây: severity của chúng đã tính trực tiếp từ giá trị sống, nếu cộng thêm vào thì
     // trạm sẽ kẹt ở mức nguy cấp ngay cả sau khi nước đã rút.
@@ -678,7 +685,7 @@ export class SensorService implements OnModuleInit {
    * lên/xuống mức thì cập nhật tại chỗ, về NORMAL thì tự đóng.
    */
   private async evaluateThresholdAlarms(
-    stationId: number,
+    stationId: string,
     damId: string,
     snapshot: SensorSnapshot,
     configs: ThresholdConfig[],
@@ -745,13 +752,13 @@ export class SensorService implements OnModuleInit {
 
       // Chưa có alarm mở -> tạo mới cho đợt sự cố này.
       const station = await this.stationRepo.findOne({
-        where: { id: stationId },
+        where: { stationId },
         relations: { dam: true },
       });
 
       const event = new AlarmEvent();
       event.damId = damId;
-      event.sensorId = snapshot.clusterId || `station_${stationId}`;
+      event.sensorId = snapshot.clusterId || stationId;
       event.sensorType = sensorType;
       event.severity = severityLabel;
       event.thresholdVal = thresholdVal;
@@ -819,7 +826,7 @@ export class SensorService implements OnModuleInit {
     const fillPct = +Math.min(100, Math.max(0, (maxLevel / tankHeight) * 100)).toFixed(1);
 
     this.damWaterLevelCache.set(damId, maxLevel);
-    await this.damRepo.update(damId, { waterLevel: maxLevel, fillPct }).catch(() => { });
+    await this.damRepo.update({ damId }, { waterLevel: maxLevel, fillPct }).catch(() => { });
 
     this.pendingDamMetricChanges.push({
       damId,
@@ -841,7 +848,7 @@ export class SensorService implements OnModuleInit {
    * Cập nhật ngay lập tức liên kết Node -> Station/Dam trong memory cache.
    * Chuyển hướng tức thì toàn bộ luồng data cảm biến của Node sang Station mới.
    */
-  updateNodeStationMapping(nodeId: string, stationId: number, damId?: string) {
+  updateNodeStationMapping(nodeId: string, stationId: string, damId?: string) {
     const targetDamId = damId || DEFAULT_DAM_ID;
     this.stationDeviceCache.set(nodeId, {
       stationId,
@@ -858,14 +865,14 @@ export class SensorService implements OnModuleInit {
     this.recomputeStationStatus(stationId).catch(() => { });
 
     console.log(
-      `[SensorService] Đã chuyển luồng dữ liệu của Node ${nodeId} sang Trạm (Station ${stationId}) - Đập (${targetDamId})`,
+      `[SensorService] Đã chuyển luồng dữ liệu của Node ${nodeId} sang Trạm ${stationId} - Đập ${targetDamId}`,
     );
   }
 
   /**
    * Huỷ đăng ký / gỡ bỏ Node khỏi Trạm & giải phóng toàn bộ memory cache liên quan.
    */
-  async unregisterNode(nodeId: string, prevStationId?: number) {
+  async unregisterNode(nodeId: string, prevStationId?: string) {
     const stationId = prevStationId ?? this.nodeStationIndex.get(nodeId);
     this.stationDeviceCache.delete(nodeId);
     this.nodeStationIndex.delete(nodeId);
@@ -873,13 +880,13 @@ export class SensorService implements OnModuleInit {
     this.latestByNode.delete(nodeId);
     this.latestVibrationStatusByNode.delete(nodeId);
 
-    if (stationId != null) {
+    if (stationId) {
       this.nodeIdsByStation.get(stationId)?.delete(nodeId);
       await this.recomputeStationStatus(stationId);
     }
   }
 
-  async getNodeStationInfo(nodeId: string, gatewayId?: string): Promise<{ stationId: number; damId: string }> {
+  async getNodeStationInfo(nodeId: string, gatewayId?: string): Promise<{ stationId: string; damId: string }> {
     let cached = this.stationDeviceCache.get(nodeId);
     if (cached) return cached;
     if (gatewayId) {
@@ -889,8 +896,8 @@ export class SensorService implements OnModuleInit {
 
     try {
       const node = await this.nodeRepo.findOne({
-        where: { id: nodeId },
-        relations: { gateway: { station: true } },
+        where: { nodeId },
+        relations: { gateway: { station: { dam: true } } },
       });
       if (node?.gateway?.stationId) {
         const info = {
@@ -905,7 +912,7 @@ export class SensorService implements OnModuleInit {
       // ignore
     }
 
-    const fallback = { stationId: 1, damId: DEFAULT_DAM_ID };
+    const fallback = { stationId: DEFAULT_STATION_ID, damId: DEFAULT_DAM_ID };
     this.registerNodeStation(nodeId, fallback.stationId, fallback.damId);
     return fallback;
   }
@@ -920,7 +927,7 @@ export class SensorService implements OnModuleInit {
     const timestamp = new Date();
     let damId = dto.damId || DEFAULT_DAM_ID;
     const sensorId = dto.clusterId || 'sensor_node_1';
-    let stationId: number | undefined = dto.stationId;
+    let stationId: string | undefined = dto.stationId;
 
     // 1. Nhanh 0ms tra cứu Trạm (Station) và Đập (Dam) từ Cache bộ nhớ
     if (dto.clusterId) {
@@ -931,11 +938,11 @@ export class SensorService implements OnModuleInit {
       }
 
       // Cập nhật online status bất đồng bộ (không block WebSocket)
-      this.nodeRepo.update(dto.clusterId, { status: 'online', lastSeenAt: timestamp }).catch(() => {});
+      this.nodeRepo.update({ nodeId: dto.clusterId }, { status: 'online', lastSeenAt: timestamp }).catch(() => {});
     }
 
     // Fallback stationId nếu chưa có
-    if (!stationId) stationId = 1;
+    if (!stationId) stationId = DEFAULT_STATION_ID;
 
     // Đăng ký Station -> Dam vô điều kiện (kể cả khi request không kèm clusterId),
     // để Dam-level aggregation không bỏ sót Station nào.
@@ -980,7 +987,7 @@ export class SensorService implements OnModuleInit {
     // Đặt sau pushHistory() để tính được biến thiên mực nước từ buffer lịch sử vừa cập nhật.
     // Chạy vô điều kiện (kể cả request không kèm clusterId, chỉ có stationId).
     const waterChange = this.calcWaterLevelChange(stationId);
-    this.stationRepo.update(stationId, {
+    this.stationRepo.update({ stationId }, {
       waterLevel: +dto.waterLevel,
       humidity: +dto.moisture,
       vibration: +dto.amp,
@@ -1113,10 +1120,10 @@ export class SensorService implements OnModuleInit {
     // 3. Cập nhật trạng thái 'online' và lastSeenAt cho Gateway & Node trong DB
     const now = new Date();
     if (gatewayId) {
-      this.gatewayRepo.update(gatewayId, { status: 'online', lastSeenAt: now }).catch(() => {});
+      this.gatewayRepo.update({ gatewayId }, { status: 'online', lastSeenAt: now }).catch(() => {});
     }
     if (nodeId) {
-      this.nodeRepo.update(nodeId, { status: 'online', lastSeenAt: now }).catch(() => {});
+      this.nodeRepo.update({ nodeId }, { status: 'online', lastSeenAt: now }).catch(() => {});
     }
 
     // 4. Tra cứu trạm (stationId) cập nhật mới nhất từ memory cache
@@ -1180,8 +1187,8 @@ export class SensorService implements OnModuleInit {
     return this.latestVibrationStatusByNode.get(nodeId) || null;
   }
 
-  getLatest(stationId?: number, clusterId?: string): SensorSnapshot | null {
-    if (stationId != null) {
+  getLatest(stationId?: string, clusterId?: string): SensorSnapshot | null {
+    if (stationId) {
       return this.latestByStation.get(stationId) || null;
     }
     if (clusterId != null) {
@@ -1190,8 +1197,8 @@ export class SensorService implements OnModuleInit {
     return this.latest;
   }
 
-  getHistory(stationId?: number): SensorHistory {
-    if (stationId != null) {
+  getHistory(stationId?: string): SensorHistory {
+    if (stationId) {
       return this.historyByStation.get(stationId) || {
         timestamps: [],
         freq: [],
@@ -1208,7 +1215,7 @@ export class SensorService implements OnModuleInit {
   async getLongTermHistory(params: {
     sensorType?: string;
     damId?: string;
-    stationId?: number;
+    stationId?: string;
     startDate?: string;
     endDate?: string;
     limit?: number;
@@ -1341,7 +1348,8 @@ export class SensorService implements OnModuleInit {
         const nodes = await this.nodeRepo.createQueryBuilder('node')
           .leftJoinAndSelect('node.gateway', 'gateway')
           .leftJoinAndSelect('gateway.station', 'station')
-          .where('station.damId = :damId', { damId: updated.damId })
+          .leftJoinAndSelect('station.dam', 'dam')
+          .where('dam.damId = :damId', { damId: updated.damId })
           .getMany();
 
         for (const node of nodes) {
@@ -1475,7 +1483,7 @@ export class SensorService implements OnModuleInit {
     // 1. Resolve target damId, stationId, names, and threshold from relations
     let targetDamId = DEFAULT_DAM_ID;
     let targetThreshold = 15.0;
-    let targetStationId: number | undefined;
+    let targetStationId: string | undefined;
     let targetStationName = '';
     let targetDamName = '';
     let targetLocation = '';
@@ -1483,13 +1491,13 @@ export class SensorService implements OnModuleInit {
     if (payload.node_id) {
       try {
         const node = await this.nodeRepo.findOne({
-          where: { id: payload.node_id },
+          where: { nodeId: payload.node_id },
           relations: { gateway: { station: { dam: true } } },
         });
         if (node?.gateway?.station) {
-          targetStationId = node.gateway.station.id;
+          targetStationId = node.gateway.station.stationId;
           targetStationName = node.gateway.station.name;
-          targetDamId = node.gateway.station.damId;
+          targetDamId = node.gateway.station.dam?.damId || DEFAULT_DAM_ID;
           targetDamName = node.gateway.station.dam?.name || `Đập ${targetDamId}`;
           targetLocation = node.gateway.station.location || node.gateway.station.km || 'Vị trí công trình đập';
         }
@@ -1502,13 +1510,13 @@ export class SensorService implements OnModuleInit {
     } else if (payload.gateway_id) {
       try {
         const gw = await this.gatewayRepo.findOne({
-          where: { id: payload.gateway_id },
+          where: { gatewayId: payload.gateway_id },
           relations: { station: { dam: true } },
         });
         if (gw?.station) {
-          targetStationId = gw.station.id;
+          targetStationId = gw.station.stationId;
           targetStationName = gw.station.name;
-          targetDamId = gw.station.damId;
+          targetDamId = gw.station.dam?.damId || DEFAULT_DAM_ID;
           targetDamName = gw.station.dam?.name || `Đập ${targetDamId}`;
           targetLocation = gw.station.location || gw.station.km || 'Vị trí công trình đập';
         }
@@ -1594,7 +1602,7 @@ export class SensorService implements OnModuleInit {
       event = new AlarmEvent();
       event.eventId = eventId || undefined;
       event.damId = targetDamId;
-      event.sensorId = payload.node_id || 'NOD-ST01-ESP01';
+      event.sensorId = payload.node_id || 'NOD-GW01-ESP01';
       event.sensorType = 'vibration';
       event.severity = severity;
       event.thresholdVal = targetThreshold;
@@ -1635,7 +1643,7 @@ export class SensorService implements OnModuleInit {
    * khuếch đại nhiễu cảm biến tới ~60 lần và sinh ra những con số báo động giả
    * (vd dao động 0.3m trong 20 giây → "tăng 54 m/h"). Trả về độ chênh thực đo được.
    */
-  private calcWaterLevelChange(stationId: number): number | null {
+  private calcWaterLevelChange(stationId: string): number | null {
     const h = this.historyByStation.get(stationId);
     if (!h || h.waterLevel.length < 2) return null;
 

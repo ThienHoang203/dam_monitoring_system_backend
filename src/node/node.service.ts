@@ -10,6 +10,7 @@ import { Repository } from 'typeorm';
 import { Node } from './entities/node.entity';
 import { Sensor } from './entities/sensor.entity';
 import { ThresholdConfig } from '../sensor/entities/threshold-config.entity';
+import { Station } from '../dam/entities/station.entity';
 import {
   CreateNodeDto,
   UpdateNodeDto,
@@ -19,11 +20,23 @@ import {
 import {
   validateDeviceId,
   validateSensorType,
+  normalizeSensorType,
 } from '../common/validators/naming-convention.validator';
 import { GatewayService } from '../gateway/gateway.service';
+import { Gateway } from '../gateway/entities/gateway.entity';
 import { SensorService } from '../sensor/sensor.service';
 import { SensorGateway } from '../gateway/sensor.gateway';
 import { CameraService } from '../camera/camera.service';
+import { Camera } from '../camera/entities/camera.entity';
+import { AuditLogService } from '../audit-log/audit-log.service';
+
+// `gateway: { station: { dam: true } }` cần thiết để @AfterLoad điền node.gatewayId,
+// gateway.stationId và station.damId — controller/service phía trên đều đọc các trường này.
+const NODE_RELATIONS = {
+  sensors: true,
+  mappedCamera: true,
+  gateway: { station: { dam: true } },
+} as const;
 
 @Injectable()
 export class NodeService {
@@ -34,10 +47,13 @@ export class NodeService {
     private readonly sensorRepo: Repository<Sensor>,
     @InjectRepository(ThresholdConfig)
     private readonly thresholdConfigRepo: Repository<ThresholdConfig>,
+    @InjectRepository(Station)
+    private readonly stationRepo: Repository<Station>,
     private readonly gatewayService: GatewayService,
     private readonly sensorService: SensorService,
     private readonly sensorGateway: SensorGateway,
     private readonly cameraService: CameraService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   /**
@@ -68,7 +84,7 @@ export class NodeService {
   }
 
   /**
-   * Sinh MAC placeholder duy nhất từ id node khi người dùng không khai báo.
+   * Sinh MAC placeholder duy nhất từ mã node khi người dùng không khai báo.
    * Octet đầu 0x02 = địa chỉ cục bộ (locally administered) nên không đụng MAC thật của nhà sản xuất.
    */
   private generatePlaceholderMac(seed: string): string {
@@ -89,7 +105,7 @@ export class NodeService {
     if (!gatewayId) return null;
     try {
       const gw = await this.gatewayService.findById(gatewayId);
-      const damId = (gw as any)?.station?.damId;
+      const damId = gw.station?.damId;
       if (!damId) return null;
       return await this.thresholdConfigRepo.findOne({ where: { damId, sensorType: 'vibration' } });
     } catch {
@@ -97,9 +113,10 @@ export class NodeService {
     }
   }
 
-  private async assertCameraExists(cameraId: string): Promise<void> {
+  /** Trả về bản ghi Camera (cần `.id` để gán vào Node.mappedCameraRefId). */
+  private async assertCameraExists(cameraId: string): Promise<Camera> {
     try {
-      await this.cameraService.findById(cameraId);
+      return await this.cameraService.findById(cameraId);
     } catch {
       throw new BadRequestException(
         `Camera "${cameraId}" không tồn tại, không thể gán cho node.`,
@@ -107,9 +124,62 @@ export class NodeService {
     }
   }
 
+  /**
+   * Tìm (hoặc tự tạo) Gateway phục vụ một Trạm, trả về mã gateway.
+   * Dùng khi client chỉ gửi stationId mà không chỉ định gateway cụ thể.
+   */
+  private async resolveGatewayIdForStation(stationId: string): Promise<string | undefined> {
+    const station = await this.stationRepo.findOne({ where: { stationId } });
+    if (!station) return undefined;
+
+    const gwList = await this.gatewayService.findAll(station.stationId);
+    if (gwList && gwList.length > 0) return gwList[0].gatewayId;
+
+    // Quy tắc đặt tên gateway chỉ có một nguồn duy nhất — GatewayService.nextGatewayId().
+    const newGwId = await this.gatewayService.nextGatewayId(station);
+    try {
+      const createdGw = await this.gatewayService.create({
+        gatewayId: newGwId,
+        name: `Gateway Jetson TX2 - ${station.name}`,
+        macAddress: `00:04:4B:${String(station.id % 256).padStart(2, '0')}:00:01`,
+        firmwareVersion: 'L4T-r32.7.3',
+        description: `Gateway tự động khởi tạo cho ${station.name}`,
+        stationId: station.stationId,
+      });
+      return createdGw.gatewayId;
+    } catch {
+      const existingGw = await this.gatewayService.findById(newGwId).catch(() => null);
+      return existingGw?.gatewayId;
+    }
+  }
+
+  /**
+   * Sinh mã node NOD-[GW_SEQ]-ESP[SEQ] — gắn theo GATEWAY, KHÔNG nhắc gì đến trạm/đập.
+   *
+   * GW_SEQ lấy từ khoá chính kỹ thuật `gateway.id` (surrogate, không đổi suốt vòng đời gateway),
+   * chứ không phải từ `gateway.gatewayId` (chuỗi mã có thể tự đổi khi gateway chuyển trạm — xem
+   * GatewayService.update). Nhờ vậy mã node CHỈ đổi khi chính node đó được gán sang một gateway
+   * khác, không bị ảnh hưởng khi gateway cha đổi trạm.
+   *
+   * SEQ đánh số trong phạm vi GW_SEQ (không đếm toàn hệ thống) — mỗi gateway có dải ESP01, ESP02...
+   * riêng, nếu không node đầu tiên của một gateway mới sẽ mang số thứ tự vô nghĩa.
+   */
+  private async nextNodeId(gateway: Gateway): Promise<string> {
+    const gwSeq = `GW${String(gateway.id).padStart(2, '0')}`;
+    const prefix = `NOD-${gwSeq}-ESP`;
+    const siblings = await this.nodeRepo.find({ select: { nodeId: true } });
+    let max = 0;
+    for (const n of siblings) {
+      if (!n.nodeId?.startsWith(prefix)) continue;
+      const seq = parseInt(n.nodeId.slice(prefix.length), 10);
+      if (!isNaN(seq)) max = Math.max(max, seq);
+    }
+    return `${prefix}${String(max + 1).padStart(2, '0')}`;
+  }
+
   // ── Node CRUD ──
 
-  async findAll(gatewayId?: string, stationId?: number, damId?: string): Promise<Node[]> {
+  async findAll(gatewayId?: string, stationId?: string, damId?: string): Promise<Node[]> {
     const qb = this.nodeRepo.createQueryBuilder('node')
       .leftJoinAndSelect('node.sensors', 'sensors')
       .leftJoinAndSelect('node.mappedCamera', 'mappedCamera')
@@ -119,77 +189,47 @@ export class NodeService {
       .orderBy('node.createdAt', 'ASC');
 
     if (gatewayId) {
-      qb.andWhere('node.gatewayId = :gatewayId', { gatewayId });
+      qb.andWhere('gateway.gatewayId = :gatewayId', { gatewayId });
     }
     if (stationId) {
-      qb.andWhere('gateway.stationId = :stationId', { stationId });
+      qb.andWhere('station.stationId = :stationId', { stationId });
     }
     if (damId && damId !== 'all') {
-      qb.andWhere('station.damId = :damId', { damId });
+      qb.andWhere('dam.damId = :damId', { damId });
     }
 
     return qb.getMany();
   }
 
-  async findById(id: string): Promise<Node> {
+  async findById(nodeId: string): Promise<Node> {
     const node = await this.nodeRepo.findOne({
-      where: { id },
-      relations: { sensors: true, mappedCamera: true, gateway: { station: true } },
+      where: { nodeId },
+      relations: NODE_RELATIONS,
     });
-    if (!node) throw new NotFoundException(`Node "${id}" không tồn tại.`);
+    if (!node) throw new NotFoundException(`Node "${nodeId}" không tồn tại.`);
     return node;
   }
 
   async create(dto: CreateNodeDto): Promise<Node> {
-    let nodeId = dto.id ? dto.id.trim() : '';
-    if (!nodeId) {
-      const count = (await this.nodeRepo.count()) + 1;
-      nodeId = `NOD-ST01-ESP${String(count).padStart(2, '0')}`;
+    let gatewayId = dto.gatewayId;
+    if (!gatewayId && dto.stationId) {
+      gatewayId = await this.resolveGatewayIdForStation(dto.stationId);
     }
+    if (!gatewayId) {
+      gatewayId = 'GTW-ST01-TX2A';
+    }
+
+    const gateway = await this.gatewayService.findById(gatewayId);
+
+    const nodeId = dto.nodeId?.trim() || (await this.nextNodeId(gateway));
 
     validateDeviceId('NODE', nodeId);
 
-    const existing = await this.nodeRepo.findOne({ where: { id: nodeId } });
+    const existing = await this.nodeRepo.findOne({ where: { nodeId } });
     if (existing) {
       throw new ConflictException(
         `Node "${nodeId}" đã tồn tại trên hệ thống.`,
       );
-    }
-
-    let gatewayId = dto.gatewayId;
-    if (!gatewayId && dto.stationId != null) {
-      const stationIdNum = Number(dto.stationId);
-      if (!isNaN(stationIdNum) && stationIdNum > 0) {
-        try {
-          const gwList = await this.gatewayService.findAll(stationIdNum);
-          if (gwList && gwList.length > 0) {
-            gatewayId = gwList[0].id;
-          } else {
-            const stationCode = `ST${String(stationIdNum).padStart(2, '0')}`;
-            const newGwId = `GTW-${stationCode}-TX2A`;
-            const mac = `00:04:4B:${String(stationIdNum).padStart(2, '0')}:00:01`;
-            try {
-              const createdGw = await this.gatewayService.create({
-                id: newGwId,
-                name: `Gateway Jetson TX2 - Trạm ${stationIdNum}`,
-                macAddress: mac,
-                firmwareVersion: 'L4T-r32.7.3',
-                description: `Gateway tự động khởi tạo cho Trạm ${stationIdNum}`,
-                stationId: stationIdNum,
-              });
-              gatewayId = createdGw.id;
-            } catch {
-              const existingGw = await this.gatewayService.findById(newGwId).catch(() => null);
-              if (existingGw) gatewayId = existingGw.id;
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-    if (!gatewayId) {
-      gatewayId = 'GTW-ST01-TX2A';
     }
 
     // Ngưỡng rung là giá trị CẤP ĐẬP (ThresholdConfig) — node mới phải kế thừa cấu hình hiện hành
@@ -197,10 +237,10 @@ export class NodeService {
     const damVibCfg = await this.findDamVibrationConfig(gatewayId);
 
     const node = new Node();
-    node.id = nodeId;
+    node.nodeId = nodeId;
     node.name = dto.name;
     // MAC có ràng buộc UNIQUE — không dùng hằng số mặc định, nếu không node thứ hai bỏ trống MAC
-    // sẽ lỗi trùng khoá. Sinh MAC cục bộ (locally administered) từ id node để luôn khác nhau.
+    // sẽ lỗi trùng khoá. Sinh MAC cục bộ (locally administered) từ mã node để luôn khác nhau.
     node.macAddress = dto.macAddress || dto.espMacAddress || this.generatePlaceholderMac(nodeId);
     if (dto.description) node.description = dto.description;
     node.firmwareVersion = dto.firmwareVersion || 'v1.0.0';
@@ -221,20 +261,20 @@ export class NodeService {
       node.episodeResetGapSec,
     );
 
-    node.gatewayId = gatewayId;
+    node.gatewayRefId = gateway.id;
     if (dto.mappedCameraId) {
-      await this.assertCameraExists(dto.mappedCameraId);
-      node.mappedCameraId = dto.mappedCameraId;
+      const camera = await this.assertCameraExists(dto.mappedCameraId);
+      node.mappedCameraRefId = camera.id;
     }
 
-    const saved = await this.nodeRepo.save(node);
-    const createdNode = await this.findById(saved.id);
+    await this.nodeRepo.save(node);
+    const createdNode = await this.findById(nodeId);
     if (createdNode.gatewayId) {
       this.gatewayService.publishGatewayConfig(createdNode.gatewayId).catch(() => {});
     }
     if (createdNode.gateway?.stationId) {
       this.sensorService.updateNodeStationMapping(
-        createdNode.id,
+        createdNode.nodeId,
         createdNode.gateway.stationId,
         createdNode.gateway.station?.damId,
       );
@@ -246,8 +286,20 @@ export class NodeService {
     return createdNode;
   }
 
-  async update(id: string, dto: UpdateNodeDto): Promise<Node> {
-    const existing = await this.findById(id);
+  /**
+   * Cập nhật Node. Khi Node được gán sang GATEWAY khác (kể cả gián tiếp qua `stationId` cũ),
+   * mã Node được SINH LẠI theo gateway mới (NOD-[GW_SEQ_MỚI]-ESPxx) để không còn "nói dối" nó
+   * đang thuộc gateway nào — cùng triết lý với GatewayService.update() đổi mã theo trạm mới.
+   *
+   * QUAN TRỌNG: node ESP32 vật lý tự lưu mã của chính nó để publish MQTT
+   * (`telemetry/gateway/{gw}/node/{id}/...`). Đổi mã ở backend KHÔNG tự cập nhật xuống thiết bị —
+   * phải cấu hình lại thiết bị thủ công sau khi đổi gateway, nếu không nó sẽ mất kết nối.
+   */
+  async update(
+    nodeId: string,
+    dto: UpdateNodeDto,
+  ): Promise<{ node: Node; renamedFrom?: string }> {
+    const existing = await this.findById(nodeId);
 
     const updateData: Partial<Node> = {};
     if (dto.name !== undefined) updateData.name = dto.name;
@@ -258,7 +310,28 @@ export class NodeService {
     if (dto.firmwareVersion !== undefined) updateData.firmwareVersion = dto.firmwareVersion;
     if (dto.installLocation !== undefined) updateData.installLocation = dto.installLocation;
     if (dto.status !== undefined) updateData.status = dto.status;
-    if (dto.gatewayId !== undefined) updateData.gatewayId = dto.gatewayId;
+
+    // Xác định gateway đích (ưu tiên gatewayId tường minh, rồi mới tới stationId để tương thích
+    // ngược) — nếu khác gateway hiện tại (so theo khoá chính, không so theo chuỗi mã), sinh lại
+    // mã Node theo gateway mới.
+    let targetGateway: Gateway | undefined;
+    if (dto.gatewayId !== undefined) {
+      targetGateway = await this.gatewayService.findById(dto.gatewayId);
+    } else if (dto.stationId) {
+      const resolvedGatewayId = await this.resolveGatewayIdForStation(dto.stationId);
+      if (resolvedGatewayId) {
+        targetGateway = await this.gatewayService.findById(resolvedGatewayId);
+      }
+    }
+
+    let targetNodeId = nodeId;
+    let renamedFrom: string | undefined;
+    if (targetGateway && targetGateway.id !== existing.gateway?.id) {
+      updateData.gatewayRefId = targetGateway.id;
+      updateData.nodeId = await this.nextNodeId(targetGateway);
+      targetNodeId = updateData.nodeId;
+      renamedFrom = nodeId;
+    }
 
     // Merge incoming threshold fields with current values to validate the
     // *effective* ordering (warn_high < alert_high < critical_high), since a
@@ -297,63 +370,40 @@ export class NodeService {
     if (dto.episodeResetGapSec !== undefined) updateData.episodeResetGapSec = effectiveEpisodeResetGapSec;
 
     if (dto.mappedCameraId !== undefined) {
-      if (dto.mappedCameraId) await this.assertCameraExists(dto.mappedCameraId);
-      updateData.mappedCameraId = dto.mappedCameraId;
-    }
-
-    // Resolve stationId change to corresponding Gateway
-    if (dto.stationId != null) {
-      const stationIdNum = Number(dto.stationId);
-      if (!isNaN(stationIdNum) && stationIdNum > 0) {
-        try {
-          const gwList = await this.gatewayService.findAll(stationIdNum);
-          if (gwList && gwList.length > 0) {
-            updateData.gatewayId = gwList[0].id;
-          } else {
-            const stationCode = `ST${String(stationIdNum).padStart(2, '0')}`;
-            const newGwId = `GTW-${stationCode}-TX2A`;
-            const mac = `00:04:4B:${String(stationIdNum).padStart(2, '0')}:00:01`;
-            try {
-              const createdGw = await this.gatewayService.create({
-                id: newGwId,
-                name: `Gateway Jetson TX2 - Trạm ${stationIdNum}`,
-                macAddress: mac,
-                firmwareVersion: 'L4T-r32.7.3',
-                description: `Gateway tự động khởi tạo cho Trạm ${stationIdNum}`,
-                stationId: stationIdNum,
-              });
-              updateData.gatewayId = createdGw.id;
-            } catch {
-              const existingGw = await this.gatewayService.findById(newGwId).catch(() => null);
-              if (existingGw) updateData.gatewayId = existingGw.id;
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }
+      updateData.mappedCameraRefId = dto.mappedCameraId
+        ? (await this.assertCameraExists(dto.mappedCameraId)).id
+        : null;
     }
 
     if (Object.keys(updateData).length > 0) {
-      await this.nodeRepo.update(id, updateData);
+      await this.nodeRepo.update({ nodeId }, updateData);
     }
 
-    const updated = await this.findById(id);
-    if (updated.gatewayId || existing.gatewayId) {
-      this.gatewayService
-        .publishGatewayConfig(updated.gatewayId || existing.gatewayId)
-        .catch(() => {});
+    const updated = await this.findById(targetNodeId);
+    const configTargetGatewayId = updated.gatewayId || existing.gatewayId;
+    if (configTargetGatewayId) {
+      this.gatewayService.publishGatewayConfig(configTargetGatewayId).catch(() => {});
     }
 
-    // Nếu thay đổi gateway hoặc gỡ bỏ khỏi trạm cũ
-    if (existing.gateway?.stationId && existing.gateway.stationId !== updated.gateway?.stationId) {
-      await this.sensorService.unregisterNode(id, existing.gateway.stationId);
+    // Đổi gateway (nên mã Node bị sinh lại) — dọn cache trong SensorService đang khoá theo mã
+    // CŨ (trạng thái rung mới nhất, chỉ số Node -> Trạm...) trước khi đăng ký lại dưới mã mới,
+    // nếu không các Map trong bộ nhớ sẽ giữ rác dưới khoá cũ vĩnh viễn cho tới khi restart.
+    if (renamedFrom) {
+      await this.sensorService.unregisterNode(renamedFrom, existing.gateway?.stationId);
+      await this.auditLogService.logAction({
+        action: 'RENAME_NODE',
+        category: 'GATEWAY',
+        description: `Node đổi gateway nên đổi mã: "${renamedFrom}" → "${updated.nodeId}" (gateway mới: ${updated.gatewayId}). Cần cấu hình lại thiết bị ESP32 vật lý.`,
+        username: 'admin',
+        userRole: 'ADMIN',
+        metadata: { oldNodeId: renamedFrom, newNodeId: updated.nodeId, gatewayId: updated.gatewayId },
+      });
     }
 
     // Chuyển hướng luồng dữ liệu cảm biến sang Station mới ngay lập tức
     if (updated.gateway?.stationId) {
       this.sensorService.updateNodeStationMapping(
-        updated.id,
+        updated.nodeId,
         updated.gateway.stationId,
         updated.gateway.station?.damId,
       );
@@ -385,7 +435,7 @@ export class NodeService {
             vibCfg.alertHigh = effectiveAlertHigh;
             vibCfg.criticalHigh = effectiveCriticalHigh;
             await this.thresholdConfigRepo.save(vibCfg);
-            console.log(`[NodeService] Đã đồng bộ ngược ngưỡng độ rung từ Node ${id} sang ThresholdConfig Đập ${damId}`);
+            console.log(`[NodeService] Đã đồng bộ ngược ngưỡng độ rung từ Node ${nodeId} sang ThresholdConfig Đập ${damId}`);
           }
         } catch (err: any) {
           console.warn('[NodeService] Lỗi đồng bộ ngược ThresholdConfig:', err.message);
@@ -393,18 +443,18 @@ export class NodeService {
       }
     }
 
-    return updated;
+    return { node: updated, renamedFrom };
   }
 
-  async delete(id: string): Promise<{ ok: boolean }> {
-    const node = await this.findById(id);
+  async delete(nodeId: string): Promise<{ ok: boolean }> {
+    const node = await this.findById(nodeId);
     const gatewayId = node.gatewayId;
     const stationId = node.gateway?.stationId;
     await this.nodeRepo.remove(node);
     if (gatewayId) {
       this.gatewayService.publishGatewayConfig(gatewayId).catch(() => {});
     }
-    await this.sensorService.unregisterNode(id, stationId);
+    await this.sensorService.unregisterNode(nodeId, stationId);
     const changes = this.sensorService.drainStatusChanges();
     for (const c of changes) {
       this.sensorGateway.broadcastStationStatus(c);
@@ -420,9 +470,11 @@ export class NodeService {
     nodeId: string,
     cameraId: string | null,
   ): Promise<Node> {
-    const node = await this.findById(nodeId);
-    if (cameraId) await this.assertCameraExists(cameraId);
-    await this.nodeRepo.update(nodeId, { mappedCameraId: cameraId });
+    await this.findById(nodeId);
+    const mappedCameraRefId = cameraId
+      ? (await this.assertCameraExists(cameraId)).id
+      : null;
+    await this.nodeRepo.update({ nodeId }, { mappedCameraRefId });
     const updated = await this.findById(nodeId);
     if (updated.gatewayId) {
       this.gatewayService.publishGatewayConfig(updated.gatewayId).catch(() => {});
@@ -433,7 +485,7 @@ export class NodeService {
   // ── Online status update (called by telemetry ingestion) ──
   async updateOnlineStatus(nodeId: string, lastSeenAt: Date): Promise<void> {
     try {
-      await this.nodeRepo.update(nodeId, { status: 'online', lastSeenAt });
+      await this.nodeRepo.update({ nodeId }, { status: 'online', lastSeenAt });
       await this.sensorService.handleNodeStatusChanged(nodeId, 'online');
       const changes = this.sensorService.drainStatusChanges();
       for (const c of changes) {
@@ -456,9 +508,9 @@ export class NodeService {
         if (now - lastSeen > TIMEOUT_MS) {
           await this.nodeRepo.update(node.id, { status: 'offline' });
           console.log(
-            `[HeartbeatCron] Sensor Node "${node.id}" không gửi tín hiệu trong 30s (lần cuối: ${node.lastSeenAt ? new Date(node.lastSeenAt).toISOString() : 'chưa gửi'}). Đã chuyển sang OFFLINE.`,
+            `[HeartbeatCron] Sensor Node "${node.nodeId}" không gửi tín hiệu trong 30s (lần cuối: ${node.lastSeenAt ? new Date(node.lastSeenAt).toISOString() : 'chưa gửi'}). Đã chuyển sang OFFLINE.`,
           );
-          await this.sensorService.handleNodeStatusChanged(node.id, 'offline');
+          await this.sensorService.handleNodeStatusChanged(node.nodeId, 'offline');
           const changes = this.sensorService.drainStatusChanges();
           for (const c of changes) {
             this.sensorGateway.broadcastStationStatus(c);
@@ -475,28 +527,51 @@ export class NodeService {
   async findSensorsByNode(nodeId: string): Promise<Sensor[]> {
     await this.findById(nodeId); // Ensure node exists
     return this.sensorRepo.find({
-      where: { nodeId },
+      where: { node: { nodeId } },
+      relations: { node: true },
       order: { createdAt: 'ASC' },
     });
   }
 
   async addSensor(nodeId: string, dto: CreateSensorDto): Promise<Sensor> {
-    validateDeviceId('SENSOR', dto.id);
-    validateSensorType(dto.sensorType);
+    const sensorType = normalizeSensorType(dto.sensorType);
+    validateSensorType(sensorType);
 
-    await this.findById(nodeId); // Ensure node exists
+    const node = await this.findById(nodeId); // Ensure node exists
 
-    const existing = await this.sensorRepo.findOne({
-      where: { id: dto.id },
-    });
+    const { sensorId: requestedId, port, ...rest } = dto;
+    const sensorId = requestedId?.trim() || this.buildSensorId(node, sensorType, port);
+    validateDeviceId('SENSOR', sensorId);
+
+    const existing = await this.sensorRepo.findOne({ where: { sensorId } });
     if (existing) {
       throw new ConflictException(
-        `Sensor "${dto.id}" đã tồn tại trên hệ thống.`,
+        `Sensor "${sensorId}" đã tồn tại trên hệ thống.`,
       );
     }
 
-    const sensor = this.sensorRepo.create({ ...dto, nodeId });
-    return this.sensorRepo.save(sensor);
+    const sensor = this.sensorRepo.create({
+      ...rest,
+      sensorId,
+      sensorType,
+      nodeRefId: node.id,
+    });
+    await this.sensorRepo.save(sensor);
+    return this.sensorRepo.findOneOrFail({
+      where: { sensorId },
+      relations: { node: true },
+    });
+  }
+
+  /**
+   * Sinh mã cảm biến SNR-[SENSOR_TYPE]-[NODE_SEQ]-[PORT].
+   * NODE_SEQ lấy đoạn cuối của mã node (NOD-GW01-ESP01 -> ESP01); PORT mặc định P01, P02...
+   */
+  private buildSensorId(node: Node, sensorType: string, port?: string): string {
+    const nodeSeq = node.nodeId.split('-').pop() || 'ESP01';
+    const seq = (node.sensors?.length ?? 0) + 1;
+    const portCode = (port?.trim() || `P${String(seq).padStart(2, '0')}`).toUpperCase();
+    return `SNR-${sensorType}-${nodeSeq}-${portCode}`;
   }
 
   async updateSensor(
@@ -504,18 +579,21 @@ export class NodeService {
     dto: UpdateSensorDto,
   ): Promise<Sensor> {
     const sensor = await this.sensorRepo.findOne({
-      where: { id: sensorId },
+      where: { sensorId },
     });
     if (!sensor) {
       throw new NotFoundException(`Sensor "${sensorId}" không tồn tại.`);
     }
-    await this.sensorRepo.update(sensorId, dto);
-    return this.sensorRepo.findOneOrFail({ where: { id: sensorId } });
+    await this.sensorRepo.update({ sensorId }, dto);
+    return this.sensorRepo.findOneOrFail({
+      where: { sensorId },
+      relations: { node: true },
+    });
   }
 
   async removeSensor(sensorId: string): Promise<{ ok: boolean }> {
     const sensor = await this.sensorRepo.findOne({
-      where: { id: sensorId },
+      where: { sensorId },
     });
     if (!sensor) {
       throw new NotFoundException(`Sensor "${sensorId}" không tồn tại.`);

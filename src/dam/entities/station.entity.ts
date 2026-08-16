@@ -1,13 +1,31 @@
-import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+  Index,
+  AfterLoad,
+} from 'typeorm';
 import { Dam } from './dam.entity';
 import { Gateway } from '../../gateway/entities/gateway.entity';
 
 @Entity('stations')
 export class Station {
+  // Khóa chính kỹ thuật — chỉ dùng nội bộ cho JOIN/khóa ngoại, không lộ ra API/MQTT.
   @PrimaryGeneratedColumn()
   id: number;
 
-  // Station code used in child device IDs (e.g. 'ST01' → GTW-ST01-TX2A, NOD-ST01-ESP01)
+  // Mã trạm theo quy tắc đặt tên A.3.2: STA-[DAM_CODE]-[XX] (vd STA-001-01). Định danh công khai.
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64 })
+  stationId: string;
+
+  // Station code dùng trong mã Gateway và Camera (vd 'ST01' → GTW-ST01-TX2A, CAM-CSI-ST01-01).
+  // Node KHÔNG dùng trường này — mã Node gắn theo Gateway, xem NodeService.nextNodeId().
   @Column({ type: 'varchar', length: 16, nullable: true })
   stationCode: string;
 
@@ -70,11 +88,12 @@ export class Station {
   @Column({ type: 'float', default: 0 })
   bd3: number;
 
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
+  // Khóa ngoại trỏ vào Dam.id (khóa chính kỹ thuật).
+  @Column({ type: 'int' })
+  damRefId: number;
 
   @ManyToOne(() => Dam, dam => dam.stations, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'damId' })
+  @JoinColumn({ name: 'damRefId' })
   dam: Dam;
 
   @OneToMany(() => Gateway, gateway => gateway.station, { cascade: true })
@@ -85,4 +104,15 @@ export class Station {
 
   @UpdateDateColumn()
   updatedAt: Date;
+
+  /**
+   * Trường ảo (KHÔNG phải cột) — mã đập cha, để JSON trả về cho frontend giữ nguyên hình dạng cũ.
+   * Chỉ có giá trị khi quan hệ `dam` được load; muốn lọc theo mã đập phải dùng `where: { dam: { damId } }`.
+   */
+  damId?: string;
+
+  @AfterLoad()
+  hydrateParentCodes() {
+    this.damId = this.dam?.damId;
+  }
 }

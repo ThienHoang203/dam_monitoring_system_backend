@@ -305,7 +305,7 @@ export class SensorController {
     @Query('stationId') stationId?: string,
     @Query('clusterId') clusterId?: string,
   ) {
-    const stId = stationId ? parseInt(stationId, 10) : undefined;
+    const stId = stationId || undefined;
     return {
       data: this.sensorService.getLatest(stId, clusterId),
       history: this.sensorService.getHistory(stId),
@@ -323,11 +323,10 @@ export class SensorController {
     @Query('limit') limit?: string,
   ) {
     const maxLimit = limit ? parseInt(limit, 10) : 100;
-    const stId = stationId ? parseInt(stationId, 10) : undefined;
     const data = await this.sensorService.getLongTermHistory({
       sensorType: type,
       damId,
-      stationId: stId,
+      stationId: stationId || undefined,
       startDate,
       endDate,
       limit: maxLimit,
@@ -359,7 +358,7 @@ export class SensorController {
     @Query('limit') limit?: string,
   ) {
     const history = await this.sensorService.getStatusHistory({
-      stationId: stationId ? parseInt(stationId, 10) : undefined,
+      stationId: stationId || undefined,
       damId,
       level,
       limit: limit ? parseInt(limit, 10) : 50,
@@ -378,7 +377,7 @@ export class SensorController {
   @Public()
   @Get('thresholds')
   async getThresholdConfigs(@Query('damId') damId: string) {
-    const targetDamId = damId || 'dam_1';
+    const targetDamId = damId || 'DAM-001';
     const configs = await this.sensorService.getThresholdConfigs(targetDamId);
     return { configs };
   }
@@ -407,7 +406,7 @@ export class SensorController {
     let targetDamId = damId;
 
     if (user && user.role === 'OPERATOR') {
-      targetDamId = user.assignedDamId || 'dam_1';
+      targetDamId = user.assignedDamId || 'DAM-001';
     } else if (damId === 'all' || !damId) {
       targetDamId = undefined;
     }
@@ -428,6 +427,7 @@ export class SensorController {
   @Put('alarms/:id/resolve')
   async resolveAlarmEvent(@Param('id') id: string) {
     const resolved = await this.sensorService.resolveAlarmEvent(id);
+    this.gateway.broadcastAlarmResolved(resolved.id, resolved.resolvedAt);
     this.broadcastStatusChanges();
     return { ok: true, data: this.rewriteImageUrl(resolved) };
   }

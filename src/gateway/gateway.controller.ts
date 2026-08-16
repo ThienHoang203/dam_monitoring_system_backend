@@ -14,6 +14,8 @@ import { GatewayService } from './gateway.service';
 import { CreateGatewayDto, UpdateGatewayDto } from './gateway.dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { User } from '../auth/entities/user.entity';
 import { GatewayApiKeyGuard } from '../auth/guards/gateway-api-key.guard';
 
 @Controller()
@@ -24,9 +26,20 @@ export class GatewayController {
 
   @Get('api/gateways')
   @Roles('ADMIN', 'OPERATOR')
-  async findAll(@Query('stationId') stationId?: string) {
-    const stId = stationId ? parseInt(stationId, 10) : undefined;
-    const gateways = await this.gatewayService.findAll(stId);
+  async findAll(
+    @Query('stationId') stationId?: string,
+    @Query('damId') damId?: string,
+    @CurrentUser() user?: User,
+  ) {
+    // OPERATOR chỉ được thấy gateway thuộc đập được phân công, bất kể query gửi lên gì.
+    let effectiveDamId = damId;
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      effectiveDamId = user.assignedDamId;
+    }
+    const gateways = await this.gatewayService.findAll(
+      stationId || undefined,
+      effectiveDamId || undefined,
+    );
     return { gateways };
   }
 
@@ -47,8 +60,10 @@ export class GatewayController {
   @Put('api/gateways/:id')
   @Roles('ADMIN')
   async update(@Param('id') id: string, @Body() dto: UpdateGatewayDto) {
-    const gateway = await this.gatewayService.update(id, dto);
-    return { ok: true, gateway };
+    // Khi đổi trạm, gatewayId được sinh lại theo trạm mới — `renamedFrom` báo cho client biết
+    // để cảnh báo admin: thiết bị Jetson vật lý phải được cấu hình lại thủ công.
+    const { gateway, renamedFrom } = await this.gatewayService.update(id, dto);
+    return { ok: true, gateway, renamedFrom };
   }
 
   @Delete('api/gateways/:id')

@@ -1,10 +1,16 @@
-import { Entity, Column, PrimaryColumn, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, UpdateDateColumn, OneToMany, Index } from 'typeorm';
 import { Station } from './station.entity';
 
 @Entity('dams')
 export class Dam {
-  @PrimaryColumn({ type: 'varchar', length: 64 })
-  id: string;
+  // Khóa chính kỹ thuật — chỉ dùng nội bộ cho JOIN/khóa ngoại, không lộ ra API/MQTT.
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  // Mã đập theo quy tắc đặt tên A.3.2: DAM-[XXX] (vd DAM-001). Đây là định danh công khai.
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64 })
+  damId: string;
 
   @Column({ type: 'varchar', length: 200 })
   name: string;

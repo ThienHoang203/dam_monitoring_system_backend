@@ -25,7 +25,7 @@ import { User } from '../auth/entities/user.entity';
 
 @Controller('api/nodes')
 export class NodeController {
-  constructor(private readonly nodeService: NodeService) {}
+  constructor(private readonly nodeService: NodeService) { }
 
   // ── Node CRUD ──
 
@@ -44,7 +44,7 @@ export class NodeController {
     }
     const nodes = await this.nodeService.findAll(
       gatewayId,
-      stationId ? parseInt(stationId, 10) : undefined,
+      stationId || undefined,
       effectiveDamId,
     );
     return { nodes };
@@ -85,8 +85,10 @@ export class NodeController {
     ) {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa Sensor Node của đập khác');
     }
-    const node = await this.nodeService.update(id, dto);
-    return { ok: true, node };
+    // Khi đổi gateway, nodeId được sinh lại theo gateway mới — `renamedFrom` báo cho client biết
+    // để cảnh báo admin: thiết bị ESP32 vật lý phải được cấu hình lại thủ công.
+    const { node, renamedFrom } = await this.nodeService.update(id, dto);
+    return { ok: true, node, renamedFrom };
   }
 
   @Delete(':id')

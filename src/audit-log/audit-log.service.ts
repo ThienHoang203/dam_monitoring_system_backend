@@ -12,7 +12,7 @@ export class AuditLogService {
 
   async logAction(data: {
     action: string;
-    category: 'AUTH' | 'DAM' | 'STATION' | 'THRESHOLD';
+    category: 'AUTH' | 'DAM' | 'STATION' | 'GATEWAY' | 'THRESHOLD';
     description: string;
     username?: string;
     userRole?: string;

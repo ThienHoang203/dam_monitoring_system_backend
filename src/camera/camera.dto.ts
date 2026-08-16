@@ -1,8 +1,11 @@
 import { IsOptional, IsString } from 'class-validator';
 
 export class CreateCameraDto {
+  // Mã camera theo chuẩn CAM-[CAM_TYPE]-[STATION_CODE]-[SEQ_ID].
+  // Bỏ trống thì backend tự sinh từ loại camera + STATION_CODE của gateway cha.
+  @IsOptional()
   @IsString()
-  id: string;
+  cameraId?: string;
 
   @IsString()
   cameraType: string;
@@ -38,4 +41,9 @@ export class UpdateCameraDto {
   @IsOptional()
   @IsString()
   resolution?: string;
+
+  // Chuyển camera sang gateway khác (mã gateway).
+  @IsOptional()
+  @IsString()
+  gatewayId?: string;
 }

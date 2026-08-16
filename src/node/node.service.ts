@@ -100,14 +100,14 @@ export class NodeService {
     return ['02', ...octets.map(o => o.toString(16).padStart(2, '0').toUpperCase())].join(':');
   }
 
-  /** Tra ThresholdConfig rung động của Đập chứa Gateway này (nguồn ngưỡng duy nhất, cấp Đập). */
-  private async findDamVibrationConfig(gatewayId?: string): Promise<ThresholdConfig | null> {
+  /** Tra ThresholdConfig rung động của Trạm chứa Gateway này. */
+  private async findStationVibrationConfig(gatewayId?: string): Promise<ThresholdConfig | null> {
     if (!gatewayId) return null;
     try {
       const gw = await this.gatewayService.findById(gatewayId);
-      const damId = gw.station?.damId;
-      if (!damId) return null;
-      return await this.thresholdConfigRepo.findOne({ where: { damId, sensorType: 'vibration' } });
+      const stationId = gw.station?.stationId;
+      if (!stationId) return null;
+      return await this.thresholdConfigRepo.findOne({ where: { stationId, sensorType: 'vibration' } });
     } catch {
       return null;
     }
@@ -232,9 +232,9 @@ export class NodeService {
       );
     }
 
-    // Ngưỡng rung là giá trị CẤP ĐẬP (ThresholdConfig) — node mới phải kế thừa cấu hình hiện hành
-    // của đập, không dùng số mặc định cứng, nếu không node mới sẽ chạy ngưỡng khác các node anh em.
-    const damVibCfg = await this.findDamVibrationConfig(gatewayId);
+    // Ngưỡng rung là giá trị CẤP TRẠM (ThresholdConfig) — node mới phải kế thừa cấu hình hiện hành
+    // của trạm, không dùng số mặc định cứng, nếu không node mới sẽ chạy ngưỡng khác các node anh em.
+    const stVibCfg = await this.findStationVibrationConfig(gatewayId);
 
     const node = new Node();
     node.nodeId = nodeId;
@@ -245,11 +245,11 @@ export class NodeService {
     if (dto.description) node.description = dto.description;
     node.firmwareVersion = dto.firmwareVersion || 'v1.0.0';
     if (dto.installLocation) node.installLocation = dto.installLocation;
-    node.vibrationThreshold = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : (damVibCfg?.alertHigh ?? 15.0);
-    node.warnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : (damVibCfg?.warnHigh ?? 2.5);
-    node.criticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : (damVibCfg?.criticalHigh ?? 25.0);
+    node.vibrationThreshold = dto.vibrationThreshold != null ? Number(dto.vibrationThreshold) : (stVibCfg?.alertHigh ?? 15.0);
+    node.warnHigh = dto.warnHigh != null ? Number(dto.warnHigh) : (stVibCfg?.warnHigh ?? 2.5);
+    node.criticalHigh = dto.criticalHigh != null ? Number(dto.criticalHigh) : (stVibCfg?.criticalHigh ?? 25.0);
     node.alertMinCount = dto.alertMinCount != null ? Number(dto.alertMinCount) : 4;
-    node.alertMinDurationSec = dto.alertMinDurationSec != null ? Number(dto.alertMinDurationSec) : 6.0;
+    node.alertMinDurationSec = dto.alertMinDurationSec != null ? Number(dto.alertMinDurationSec) : (stVibCfg?.sustainedSeconds ?? 3.0);
     node.episodeResetGapSec = dto.episodeResetGapSec != null ? Number(dto.episodeResetGapSec) : 3.0;
 
     this.validateThresholds(
@@ -414,28 +414,30 @@ export class NodeService {
       this.sensorGateway.broadcastStationStatus(c);
     }
 
-    // Đồng bộ ngược ngưỡng độ rung sang ThresholdConfig của Đập — CHỈ khi 3 giá trị ngưỡng được
-    // gửi lên tường minh. Nếu gate bằng thresholdFieldsChanged (bao gồm cả alertMinCount /
-    // alertMinDurationSec) thì chỉ sửa tham số episode cũng ghi đè ngưỡng cấp Đập bằng giá trị
-    // cũ của riêng node này.
+    // Đồng bộ ngược ngưỡng độ rung sang ThresholdConfig của Trạm — CHỈ khi các giá trị ngưỡng được
+    // gửi lên tường minh.
     const vibrationValuesProvided =
       dto.warnHigh !== undefined ||
       dto.vibrationThreshold !== undefined ||
-      dto.criticalHigh !== undefined;
+      dto.criticalHigh !== undefined ||
+      dto.alertMinDurationSec !== undefined;
 
     if (vibrationValuesProvided) {
-      const damId = updated.gateway?.station?.damId;
-      if (damId) {
+      const stationId = updated.gateway?.station?.stationId;
+      if (stationId) {
         try {
           const vibCfg = await this.thresholdConfigRepo.findOne({
-            where: { damId, sensorType: 'vibration' },
+            where: { stationId, sensorType: 'vibration' },
           });
           if (vibCfg) {
             vibCfg.warnHigh = effectiveWarnHigh;
             vibCfg.alertHigh = effectiveAlertHigh;
             vibCfg.criticalHigh = effectiveCriticalHigh;
+            if (dto.alertMinDurationSec != null) {
+              vibCfg.sustainedSeconds = effectiveAlertMinDurationSec;
+            }
             await this.thresholdConfigRepo.save(vibCfg);
-            console.log(`[NodeService] Đã đồng bộ ngược ngưỡng độ rung từ Node ${nodeId} sang ThresholdConfig Đập ${damId}`);
+            console.log(`[NodeService] Đã đồng bộ ngược ngưỡng độ rung từ Node ${nodeId} sang ThresholdConfig Trạm ${stationId}`);
           }
         } catch (err: any) {
           console.warn('[NodeService] Lỗi đồng bộ ngược ThresholdConfig:', err.message);

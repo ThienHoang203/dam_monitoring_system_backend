@@ -1,12 +1,17 @@
-import { Entity, Column, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, Column, PrimaryGeneratedColumn, UpdateDateColumn, Index } from 'typeorm';
 
 @Entity('threshold_configs')
+@Index(['stationId', 'sensorType'], { unique: true })
 export class ThresholdConfig {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar', length: 64 })
-  damId: string;
+  @Index()
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  stationId: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  damId?: string;
 
   @Column({ type: 'varchar', length: 32 })
   sensorType: string; // 'vibration' | 'water_level' | 'humidity'

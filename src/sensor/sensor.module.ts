@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SensorService } from './sensor.service';
 import { SensorController } from './sensor.controller';
@@ -15,9 +15,11 @@ import { Gateway } from '../gateway/entities/gateway.entity';
 import { Node } from '../node/entities/node.entity';
 import { Evidence } from '../evidence/entities/evidence.entity';
 import { User } from '../auth/entities/user.entity';
+import { GatewayModule } from '../gateway/gateway.module';
 
 @Module({
   imports: [
+    forwardRef(() => GatewayModule),
     TypeOrmModule.forFeature([
       SensorReading,
       ThresholdConfig,

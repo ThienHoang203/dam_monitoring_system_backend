@@ -248,9 +248,6 @@ export class DamService implements OnModuleInit {
     });
     const saved = await this.damRepo.save(dam);
 
-    // Đập mới phải có ngay bộ ngưỡng mặc định, nếu không sẽ không cảnh báo được
-    // nước/độ ẩm và form sửa ngưỡng sẽ lưu không ăn (không có bản ghi để update).
-    await this.sensorService.ensureThresholdConfigs(saved.damId);
     await this.sensorService.recomputeDamStatus(saved.damId);
 
     await this.auditLogService.logAction({
@@ -386,8 +383,9 @@ export class DamService implements OnModuleInit {
     });
     const saved = await this.stationRepo.save(station);
 
-    // Đăng ký ngay Station -> Dam và kích hoạt đánh giá trạng thái an toàn
+    // Đăng ký ngay Station -> Dam, khởi tạo ngưỡng riêng cho trạm và kích hoạt đánh giá an toàn
     this.sensorService.registerStationDam(saved.stationId, dam.damId);
+    await this.sensorService.ensureThresholdConfigs(saved.stationId, dam.damId);
     await this.sensorService.recomputeStationStatus(saved.stationId);
 
     await this.auditLogService.logAction({
@@ -432,6 +430,7 @@ export class DamService implements OnModuleInit {
   async deleteStation(stationId: string): Promise<{ ok: boolean }> {
     const station = await this.findStationById(stationId);
     await this.stationRepo.remove(station);
+    await this.sensorService.deleteThresholdConfigsByStation(stationId);
     return { ok: true };
   }
 }

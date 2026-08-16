@@ -65,6 +65,10 @@ export class CreateNodeDto {
   @IsOptional()
   @IsString()
   mappedCameraId?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
 }
 
 export class UpdateNodeDto {

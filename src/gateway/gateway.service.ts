@@ -124,6 +124,7 @@ export class GatewayService implements OnModuleInit {
       ...rest,
       gatewayId,
       stationRefId: station.id,
+      status: 'offline', // Mặc định luôn là offline khi mới tạo; chuyển online tự động khi có heartbeat/telemetry
     });
     await this.gatewayRepo.save(gateway);
     const saved = await this.findById(gatewayId);

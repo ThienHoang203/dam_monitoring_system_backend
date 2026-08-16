@@ -313,8 +313,10 @@ export class SensorController {
   }
 
   @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('history/long-term')
   async getLongTermHistory(
+    @CurrentUser() user: User | null,
     @Query('type') type?: string,
     @Query('damId') damId?: string,
     @Query('stationId') stationId?: string,
@@ -322,10 +324,17 @@ export class SensorController {
     @Query('endDate') endDate?: string,
     @Query('limit') limit?: string,
   ) {
+    let targetDamId = damId;
+    if (user && user.role === 'OPERATOR') {
+      targetDamId = user.assignedDamId || 'DAM-001';
+    } else if (damId === 'all' || !damId) {
+      targetDamId = undefined;
+    }
+
     const maxLimit = limit ? parseInt(limit, 10) : 100;
     const data = await this.sensorService.getLongTermHistory({
       sensorType: type,
-      damId,
+      damId: targetDamId,
       stationId: stationId || undefined,
       startDate,
       endDate,
@@ -335,14 +344,23 @@ export class SensorController {
   }
 
   @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('history/kpi')
   async getHistoryKpi(
+    @CurrentUser() user: User | null,
     @Query('damId') damId?: string,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
+    let targetDamId = damId;
+    if (user && user.role === 'OPERATOR') {
+      targetDamId = user.assignedDamId || 'DAM-001';
+    } else if (damId === 'all' || !damId) {
+      targetDamId = undefined;
+    }
+
     const kpi = await this.sensorService.getHistoryKpi({
-      damId,
+      damId: targetDamId,
       startDate,
       endDate,
     });
@@ -376,14 +394,17 @@ export class SensorController {
 
   @Public()
   @Get('thresholds')
-  async getThresholdConfigs(@Query('damId') damId: string) {
-    const targetDamId = damId || 'DAM-001';
-    const configs = await this.sensorService.getThresholdConfigs(targetDamId);
+  async getThresholdConfigs(
+    @Query('stationId') stationId?: string,
+    @Query('damId') damId?: string,
+  ) {
+    const targetStationId = stationId || 'STA-001-01';
+    const configs = await this.sensorService.getThresholdConfigs(targetStationId, damId);
     return { configs };
   }
 
-  // Cập nhật cấu hình ngưỡng — Yêu cầu quyền ADMIN
-  @Roles('ADMIN')
+  // Cập nhật cấu hình ngưỡng — Phân quyền ADMIN & OPERATOR
+  @Roles('ADMIN', 'OPERATOR')
   @Put('thresholds/:id')
   async updateThresholdConfig(
     @Param('id') id: string,

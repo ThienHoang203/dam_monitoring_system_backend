@@ -21,6 +21,10 @@ export class CreateCameraDto {
   @IsString()
   resolution?: string;
 
+  @IsOptional()
+  @IsString()
+  status?: string;
+
   @IsString()
   gatewayId: string;
 }

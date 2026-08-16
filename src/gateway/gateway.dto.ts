@@ -21,6 +21,10 @@ export class CreateGatewayDto {
   @IsString()
   description?: string;
 
+  @IsOptional()
+  @IsString()
+  status?: string;
+
   // Mã trạm cha (STA-001-01) — service tự resolve sang khóa chính.
   @IsString()
   stationId: string;

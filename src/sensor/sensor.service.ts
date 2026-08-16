@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, BadRequestException } from '@nestjs/common';
+import { Injectable, OnModuleInit, BadRequestException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, MoreThan, In } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -17,6 +17,7 @@ import { Node } from '../node/entities/node.entity';
 import { Evidence } from '../evidence/entities/evidence.entity';
 import { User } from '../auth/entities/user.entity';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { GatewayService } from '../gateway/gateway.service';
 import * as nodemailer from 'nodemailer';
 
 const MAX_HISTORY = 60;
@@ -119,19 +120,23 @@ export class SensorService implements OnModuleInit {
     private readonly bufferService: SensorBufferService,
     private readonly configService: ConfigService,
     private readonly auditLogService: AuditLogService,
+    @Optional()
+    @Inject(forwardRef(() => GatewayService))
+    private readonly gatewayService?: GatewayService,
   ) { }
 
   // Khởi tạo ngưỡng mặc định & nạp cache khi khởi động ứng dụng
   async onModuleInit() {
-    console.log('[SensorService] Đang kiểm tra cấu hình ngưỡng mặc định...');
+    console.log('[SensorService] Đang kiểm tra cấu hình ngưỡng mặc định cho các Trạm quan trắc...');
 
-    // Backfill cho MỌI đập đang có, không chỉ đập mặc định — đập tạo qua UI trước đây
-    // không hề có ThresholdConfig nào, khiến nước/độ ẩm không bao giờ cảnh báo
-    // và form sửa ngưỡng lưu không ăn (không có bản ghi để update).
-    const dams = await this.damRepo.find();
-    const damIds = dams.length > 0 ? dams.map(d => d.damId) : [DEFAULT_DAM_ID];
-    for (const damId of damIds) {
-      await this.ensureThresholdConfigs(damId);
+    // Đảm bảo MỌI trạm quan trắc đều có đủ bộ ThresholdConfig (nước, rung, độ ẩm)
+    try {
+      const stations = await this.stationRepo.find({ relations: { dam: true } });
+      for (const st of stations) {
+        await this.ensureThresholdConfigs(st.stationId, st.damId || st.dam?.damId);
+      }
+    } catch (err: any) {
+      console.warn('[SensorService] Lỗi khi backfill ngưỡng cho các trạm:', err.message);
     }
 
     // Warm-up cache bộ nhớ cho ThresholdConfigs và Mappings
@@ -139,21 +144,22 @@ export class SensorService implements OnModuleInit {
   }
 
   /**
-   * Đảm bảo một Đập luôn có đủ bộ ThresholdConfig (vibration / water_level / humidity).
-   * Idempotent — chỉ tạo loại nào còn thiếu. Gọi khi khởi động (backfill) và khi tạo Đập mới,
-   * để không bao giờ tồn tại Đập "không có ngưỡng" (sẽ không cảnh báo được nước/độ ẩm).
+   * Đảm bảo một Trạm quan trắc luôn có đủ bộ ThresholdConfig (vibration / water_level / humidity).
+   * Idempotent — chỉ tạo loại nào còn thiếu.
    */
-  async ensureThresholdConfigs(damId: string): Promise<void> {
+  async ensureThresholdConfigs(stationId: string, damId?: string): Promise<void> {
+    if (!stationId) return;
     const types = ['vibration', 'water_level', 'humidity'];
 
     for (const type of types) {
       const exists = await this.thresholdConfigRepo.findOne({
-        where: { damId, sensorType: type },
+        where: { stationId, sensorType: type },
       });
       if (exists) continue;
 
       const config = new ThresholdConfig();
-      config.damId = damId;
+      config.stationId = stationId;
+      if (damId) config.damId = damId;
       config.sensorType = type;
 
       if (type === 'vibration') {
@@ -179,20 +185,24 @@ export class SensorService implements OnModuleInit {
       }
 
       await this.thresholdConfigRepo.save(config);
-      console.log(`[SensorService] Đã tạo ngưỡng mặc định [${type}] cho Đập ${damId}`);
+      console.log(`[SensorService] Đã tạo ngưỡng mặc định [${type}] cho Trạm ${stationId}`);
     }
 
-    // Cache có thể đang giữ mảng rỗng cho đập này — nạp lại để ingest/recompute dùng ngay.
     this.thresholdConfigCache.set(
-      damId,
-      await this.thresholdConfigRepo.find({ where: { damId } }),
+      stationId,
+      await this.thresholdConfigRepo.find({ where: { stationId } }),
     );
   }
 
-  /** Xoá ngưỡng của một Đập khi Đập bị xoá (ThresholdConfig không có FK nên không tự cascade). */
+  /** Xoá ngưỡng của một Trạm khi Trạm bị xoá. */
+  async deleteThresholdConfigsByStation(stationId: string): Promise<void> {
+    await this.thresholdConfigRepo.delete({ stationId });
+    this.thresholdConfigCache.delete(stationId);
+  }
+
+  /** Xoá ngưỡng của các trạm thuộc một Đập khi Đập bị xoá. */
   async deleteThresholdConfigsByDam(damId: string): Promise<void> {
     await this.thresholdConfigRepo.delete({ damId });
-    this.thresholdConfigCache.delete(damId);
   }
 
   private async preloadCache() {
@@ -200,9 +210,11 @@ export class SensorService implements OnModuleInit {
       const configs = await this.thresholdConfigRepo.find();
       const grouped = new Map<string, ThresholdConfig[]>();
       for (const c of configs) {
-        const list = grouped.get(c.damId) || [];
-        list.push(c);
-        grouped.set(c.damId, list);
+        if (c.stationId) {
+          const list = grouped.get(c.stationId) || [];
+          list.push(c);
+          grouped.set(c.stationId, list);
+        }
       }
       this.thresholdConfigCache = grouped;
 
@@ -473,10 +485,14 @@ export class SensorService implements OnModuleInit {
       return;
     }
 
-    let configs = this.thresholdConfigCache.get(damId);
-    if (!configs) {
-      configs = await this.thresholdConfigRepo.find({ where: { damId } });
-      this.thresholdConfigCache.set(damId, configs);
+    let configs = this.thresholdConfigCache.get(stationId);
+    if (!configs || configs.length === 0) {
+      configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+      if (configs.length === 0 && stationId) {
+        await this.ensureThresholdConfigs(stationId, damId);
+        configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+      }
+      this.thresholdConfigCache.set(stationId, configs);
     }
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
     const humidityConfig = configs.find(c => c.sensorType === 'humidity');
@@ -951,11 +967,15 @@ export class SensorService implements OnModuleInit {
       this.registerNodeStation(dto.clusterId, stationId, damId);
     }
 
-    // 2. Lấy cấu hình ngưỡng từ memory cache (0ms)
-    let configs = this.thresholdConfigCache.get(damId);
+    // 2. Lấy cấu hình ngưỡng của Trạm từ memory cache (0ms)
+    let configs = this.thresholdConfigCache.get(stationId);
     if (!configs || configs.length === 0) {
-      configs = await this.thresholdConfigRepo.find({ where: { damId } });
-      this.thresholdConfigCache.set(damId, configs);
+      configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+      if (configs.length === 0 && stationId) {
+        await this.ensureThresholdConfigs(stationId, damId);
+        configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+      }
+      this.thresholdConfigCache.set(stationId, configs);
     }
 
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
@@ -1318,17 +1338,20 @@ export class SensorService implements OnModuleInit {
     };
   }
 
-  // Quản lý cấu hình ngưỡng
-  async getThresholdConfigs(damId: string): Promise<ThresholdConfig[]> {
-    return this.thresholdConfigRepo.find({ where: { damId } });
+  // Quản lý cấu hình ngưỡng theo từng Trạm quan trắc
+  async getThresholdConfigs(stationId: string, damId?: string): Promise<ThresholdConfig[]> {
+    let configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+    if (configs.length === 0 && stationId) {
+      await this.ensureThresholdConfigs(stationId, damId);
+      configs = await this.thresholdConfigRepo.find({ where: { stationId } });
+    }
+    return configs;
   }
 
   async updateThresholdConfig(id: string, update: Partial<ThresholdConfig>): Promise<ThresholdConfig> {
     const existing = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
 
-    // Validate mức HIỆU LỰC (merge giá trị cũ + giá trị mới, vì update có thể chỉ đổi 1 trường)
-    // để đảm bảo warnHigh < alertHigh < criticalHigh — mức báo động sau phải cao hơn mức trước,
-    // nếu không classifySeverity() (so sánh '>=' theo thứ tự warn -> alert -> critical) sẽ sai logic.
+    // Validate mức HIỆU LỰC (merge giá trị cũ + giá trị mới)
     const effectiveWarnHigh = update.warnHigh != null ? Number(update.warnHigh) : Number(existing.warnHigh);
     const effectiveAlertHigh = update.alertHigh != null ? Number(update.alertHigh) : Number(existing.alertHigh);
     const effectiveCriticalHigh = update.criticalHigh != null ? Number(update.criticalHigh) : Number(existing.criticalHigh);
@@ -1342,36 +1365,53 @@ export class SensorService implements OnModuleInit {
     await this.thresholdConfigRepo.update(id, update);
     const updated = await this.thresholdConfigRepo.findOneOrFail({ where: { id } });
 
-    // Đồng bộ ngưỡng độ rung của Đập/Trạm sang các Node Jetson TX2 thuộc Đập/Trạm này
-    if (updated.sensorType === 'vibration') {
+    // Đồng bộ ngưỡng độ rung của Trạm sang tất cả Sensor Node (ESP32) & Gateway Jetson TX2 trong Trạm này
+    if (updated.sensorType === 'vibration' && updated.stationId) {
       try {
         const nodes = await this.nodeRepo.createQueryBuilder('node')
           .leftJoinAndSelect('node.gateway', 'gateway')
           .leftJoinAndSelect('gateway.station', 'station')
-          .leftJoinAndSelect('station.dam', 'dam')
-          .where('dam.damId = :damId', { damId: updated.damId })
+          .where('station.stationId = :stationId', { stationId: updated.stationId })
           .getMany();
 
         for (const node of nodes) {
           node.warnHigh = updated.warnHigh;
           node.vibrationThreshold = updated.alertHigh;
           node.criticalHigh = updated.criticalHigh;
+          if (updated.sustainedSeconds != null) {
+            node.alertMinDurationSec = updated.sustainedSeconds;
+          }
           await this.nodeRepo.save(node);
         }
-        console.log(`[SensorService] Backend đã đồng bộ ngưỡng độ rung (${updated.warnHigh} / ${updated.alertHigh} / ${updated.criticalHigh}) sang ${nodes.length} Sensor Node(s) Jetson TX2 thuộc Đập ${updated.damId}`);
+        console.log(`[SensorService] Đã đồng bộ ngưỡng độ rung (${updated.warnHigh} / ${updated.alertHigh} / ${updated.criticalHigh}) sang ${nodes.length} Sensor Node(s) thuộc Trạm ${updated.stationId}`);
+
+        // Phát bản tin MQTT cập nhật cấu hình cho toàn bộ Gateway Jetson TX2 của Trạm
+        if (this.gatewayService) {
+          const gateways = await this.gatewayRepo.createQueryBuilder('gw')
+            .leftJoinAndSelect('gw.station', 'station')
+            .where('station.stationId = :stationId', { stationId: updated.stationId })
+            .getMany();
+
+          for (const gw of gateways) {
+            await this.gatewayService.publishGatewayConfig(gw.gatewayId).catch(() => {});
+          }
+          console.log(`[SensorService] Đã gửi thông báo MQTT config update tới ${gateways.length} Gateway(s) của Trạm ${updated.stationId}`);
+        }
       } catch (e: any) {
-        console.warn('[SensorService] Lỗi đồng bộ ngưỡng độ rung xuống Node:', e.message);
+        console.warn('[SensorService] Lỗi đồng bộ ngưỡng độ rung xuống phần cứng Trạm:', e.message);
       }
     }
 
-    this.thresholdConfigCache.delete(updated.damId);
-    const configs = await this.thresholdConfigRepo.find({ where: { damId: updated.damId } });
-    this.thresholdConfigCache.set(updated.damId, configs);
+    if (updated.stationId) {
+      this.thresholdConfigCache.delete(updated.stationId);
+      const configs = await this.thresholdConfigRepo.find({ where: { stationId: updated.stationId } });
+      this.thresholdConfigCache.set(updated.stationId, configs);
+    }
 
     await this.auditLogService.logAction({
       action: 'UPDATE_THRESHOLD',
       category: 'THRESHOLD',
-      description: `Thay đổi cấu hình ngưỡng báo động [${updated.sensorType.toUpperCase()}] đập ${updated.damId} (Warn: ${updated.warnHigh}, Alert: ${updated.alertHigh}, Critical: ${updated.criticalHigh})`,
+      description: `Thay đổi cấu hình ngưỡng báo động [${updated.sensorType.toUpperCase()}] Trạm ${updated.stationId} (Warn: ${updated.warnHigh}, Alert: ${updated.alertHigh}, Critical: ${updated.criticalHigh})`,
       username: 'admin',
       userRole: 'ADMIN',
       metadata: updated,

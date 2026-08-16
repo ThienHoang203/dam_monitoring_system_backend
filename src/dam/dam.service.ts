@@ -234,15 +234,32 @@ export class DamService implements OnModuleInit {
 
   // ── Station CRUD ──
   async findAllStations(damId?: string): Promise<Station[]> {
-    if (damId) {
-      return this.stationRepo.find({
-        where: { damId },
-        relations: { dam: true, gateways: { nodes: { sensors: true }, cameras: true } },
-      });
-    }
-    return this.stationRepo.find({
+    const stations = await this.stationRepo.find({
+      where: damId ? { damId } : {},
       relations: { dam: true, gateways: { nodes: { sensors: true }, cameras: true } },
+      order: { id: 'ASC' },
     });
+
+    for (const st of stations) {
+      const allNodes = (st.gateways || []).flatMap(g => g.nodes || []);
+      if (allNodes.length === 0 && st.status !== 'unknown') {
+        st.status = 'unknown';
+        st.statusReason = 'Chưa gắn Sensor Node vào trạm';
+        st.waterLevel = 0;
+        st.humidity = 0;
+        st.vibration = 0;
+        this.stationRepo.update(st.id, {
+          status: 'unknown',
+          statusReason: 'Chưa gắn Sensor Node vào trạm',
+          waterLevel: 0,
+          humidity: 0,
+          vibration: 0,
+          change: 0,
+        }).catch(() => {});
+      }
+    }
+
+    return stations;
   }
 
   async findStationById(id: number): Promise<Station> {
@@ -251,6 +268,24 @@ export class DamService implements OnModuleInit {
       relations: { dam: true, gateways: { nodes: { sensors: true }, cameras: true } },
     });
     if (!station) throw new NotFoundException(`Station with id ${id} not found`);
+
+    const allNodes = (station.gateways || []).flatMap(g => g.nodes || []);
+    if (allNodes.length === 0 && station.status !== 'unknown') {
+      station.status = 'unknown';
+      station.statusReason = 'Chưa gắn Sensor Node vào trạm';
+      station.waterLevel = 0;
+      station.humidity = 0;
+      station.vibration = 0;
+      this.stationRepo.update(station.id, {
+        status: 'unknown',
+        statusReason: 'Chưa gắn Sensor Node vào trạm',
+        waterLevel: 0,
+        humidity: 0,
+        vibration: 0,
+        change: 0,
+      }).catch(() => {});
+    }
+
     return station;
   }
 

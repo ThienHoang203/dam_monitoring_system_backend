@@ -235,11 +235,16 @@ export class SensorService implements OnModuleInit {
   /**
    * Đọc lại quan hệ Gateway/Station/Node -> Dam từ DB và dựng lại topology trong bộ nhớ
    * (stationDeviceCache, stationIdsByDam, nodeIdsByStation). Dùng lúc khởi động (preloadCache)
-   * VÀ định kỳ (resyncTopology) để tự phục hồi nếu có điểm đăng ký nào đó bị bỏ sót lúc runtime
-   * (vd Station được tạo thẳng vào DB, không qua DamService).
+   * VÀ định kỳ (resyncTopology) để tự phục hồi nếu có điểm đăng ký nào đó bị bỏ sót lúc runtime.
    */
-  private async syncTopologyFromDb(): Promise<Set<number>> {
+  async syncTopologyFromDb(): Promise<Set<number>> {
     const knownStationIds = new Set<number>();
+
+    // Xoá trắng các cache mapping trước khi đồng bộ lại từ CSDL
+    this.stationDeviceCache.clear();
+    this.nodeStationIndex.clear();
+    this.nodeIdsByStation.clear();
+    this.stationIdsByDam.clear();
 
     const gateways = await this.gatewayRepo.find({ relations: { station: true } });
     for (const gw of gateways) {
@@ -328,6 +333,20 @@ export class SensorService implements OnModuleInit {
     const TIMEOUT_MS = 30_000;
     const now = Date.now();
 
+    // 0. Kiểm tra trực tiếp trong CSDL xem trạm có bất kỳ Sensor Node nào gắn kèm không
+    const nodeCount = await this.nodeRepo.createQueryBuilder('node')
+      .innerJoin('node.gateway', 'gw')
+      .where('gw.stationId = :stationId', { stationId })
+      .getCount();
+
+    if (nodeCount === 0) {
+      // Trạm không gắn bất kỳ Sensor Node nào -> Xoá sạch snapshot / history / index trong bộ nhớ
+      this.latestByStation.delete(stationId);
+      this.historyByStation.delete(stationId);
+      this.nodeIdsByStation.delete(stationId);
+      return false;
+    }
+
     // 1. Kiểm tra snapshot thời gian thực gần nhất của trạm
     const snapshot = this.latestByStation.get(stationId);
     if (snapshot?.timestamp) {
@@ -397,40 +416,51 @@ export class SensorService implements OnModuleInit {
     const isConnected = await this.isStationNodeConnected(stationId);
     if (!isConnected) {
       const worst: Severity | null = null;
-      const nodeIds = this.nodeIdsByStation.get(stationId);
-      const statusReason = (!nodeIds || nodeIds.size === 0)
+      const nodeCount = await this.nodeRepo.createQueryBuilder('node')
+        .innerJoin('node.gateway', 'gw')
+        .where('gw.stationId = :stationId', { stationId })
+        .getCount();
+
+      const statusReason = (nodeCount === 0)
         ? 'Chưa gắn Sensor Node vào trạm'
         : 'Mất kết nối với Sensor Node (không có tín hiệu trong 30s)';
 
       const hadPrev = this.stationSeverityCache.has(stationId);
       const prevSeverity = this.stationSeverityCache.get(stationId) ?? null;
       const prevReason = this.stationReasonCache.get(stationId) ?? '';
-      if (hadPrev && prevSeverity === worst && prevReason === statusReason) return;
-
+      
       this.stationSeverityCache.set(stationId, worst);
       this.stationReasonCache.set(stationId, statusReason);
       const status = severityToStatus(worst); // 'unknown'
-      await this.stationRepo.update(stationId, { status, statusReason }).catch(() => { });
 
-      this.statusHistoryRepo.save({
-        level: 'station',
-        stationId,
-        damId,
-        previousStatus: hadPrev ? severityToStatus(prevSeverity) : 'safe',
-        newStatus: status,
-        severity: -1,
-        reason: statusReason,
-      }).catch(() => { });
-
-      this.pendingStatusChanges.push({
-        level: 'station',
-        stationId,
-        damId,
+      // Cập nhật DB: Nếu chưa có node nào gắn vào trạm, reset các số đo về 0
+      await this.stationRepo.update(stationId, {
         status,
         statusReason,
-        severity: -1,
-        timestamp: new Date().toISOString(),
-      });
+        ...(nodeCount === 0 ? { waterLevel: 0, humidity: 0, vibration: 0, change: 0 } : {}),
+      }).catch(() => { });
+
+      if (!hadPrev || prevSeverity !== worst || prevReason !== statusReason) {
+        this.statusHistoryRepo.save({
+          level: 'station',
+          stationId,
+          damId,
+          previousStatus: hadPrev ? severityToStatus(prevSeverity) : 'safe',
+          newStatus: status,
+          severity: -1,
+          reason: statusReason,
+        }).catch(() => { });
+
+        this.pendingStatusChanges.push({
+          level: 'station',
+          stationId,
+          damId,
+          status,
+          statusReason,
+          severity: -1,
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       await this.recomputeDamStatus(damId);
       return;
@@ -832,6 +862,23 @@ export class SensorService implements OnModuleInit {
     );
   }
 
+  /**
+   * Huỷ đăng ký / gỡ bỏ Node khỏi Trạm & giải phóng toàn bộ memory cache liên quan.
+   */
+  async unregisterNode(nodeId: string, prevStationId?: number) {
+    const stationId = prevStationId ?? this.nodeStationIndex.get(nodeId);
+    this.stationDeviceCache.delete(nodeId);
+    this.nodeStationIndex.delete(nodeId);
+    this.nodeStateCache.delete(nodeId);
+    this.latestByNode.delete(nodeId);
+    this.latestVibrationStatusByNode.delete(nodeId);
+
+    if (stationId != null) {
+      this.nodeIdsByStation.get(stationId)?.delete(nodeId);
+      await this.recomputeStationStatus(stationId);
+    }
+  }
+
   async getNodeStationInfo(nodeId: string, gatewayId?: string): Promise<{ stationId: number; damId: string }> {
     let cached = this.stationDeviceCache.get(nodeId);
     if (cached) return cached;
@@ -1134,18 +1181,25 @@ export class SensorService implements OnModuleInit {
   }
 
   getLatest(stationId?: number, clusterId?: string): SensorSnapshot | null {
-    if (stationId && this.latestByStation.has(stationId)) {
-      return this.latestByStation.get(stationId)!;
+    if (stationId != null) {
+      return this.latestByStation.get(stationId) || null;
     }
-    if (clusterId && this.latestByNode.has(clusterId)) {
-      return this.latestByNode.get(clusterId)!;
+    if (clusterId != null) {
+      return this.latestByNode.get(clusterId) || null;
     }
     return this.latest;
   }
 
   getHistory(stationId?: number): SensorHistory {
-    if (stationId && this.historyByStation.has(stationId)) {
-      return this.historyByStation.get(stationId)!;
+    if (stationId != null) {
+      return this.historyByStation.get(stationId) || {
+        timestamps: [],
+        freq: [],
+        amp: [],
+        waterLevel: [],
+        moisture: [],
+        percent: [],
+      };
     }
     return this.history;
   }

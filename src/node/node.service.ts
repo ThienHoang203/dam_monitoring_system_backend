@@ -238,6 +238,10 @@ export class NodeService {
         createdNode.gateway.stationId,
         createdNode.gateway.station?.damId,
       );
+      const changes = this.sensorService.drainStatusChanges();
+      for (const c of changes) {
+        this.sensorGateway.broadcastStationStatus(c);
+      }
     }
     return createdNode;
   }
@@ -341,6 +345,11 @@ export class NodeService {
         .catch(() => {});
     }
 
+    // Nếu thay đổi gateway hoặc gỡ bỏ khỏi trạm cũ
+    if (existing.gateway?.stationId && existing.gateway.stationId !== updated.gateway?.stationId) {
+      await this.sensorService.unregisterNode(id, existing.gateway.stationId);
+    }
+
     // Chuyển hướng luồng dữ liệu cảm biến sang Station mới ngay lập tức
     if (updated.gateway?.stationId) {
       this.sensorService.updateNodeStationMapping(
@@ -348,6 +357,11 @@ export class NodeService {
         updated.gateway.stationId,
         updated.gateway.station?.damId,
       );
+    }
+
+    const changes = this.sensorService.drainStatusChanges();
+    for (const c of changes) {
+      this.sensorGateway.broadcastStationStatus(c);
     }
 
     // Đồng bộ ngược ngưỡng độ rung sang ThresholdConfig của Đập — CHỈ khi 3 giá trị ngưỡng được
@@ -385,9 +399,15 @@ export class NodeService {
   async delete(id: string): Promise<{ ok: boolean }> {
     const node = await this.findById(id);
     const gatewayId = node.gatewayId;
+    const stationId = node.gateway?.stationId;
     await this.nodeRepo.remove(node);
     if (gatewayId) {
       this.gatewayService.publishGatewayConfig(gatewayId).catch(() => {});
+    }
+    await this.sensorService.unregisterNode(id, stationId);
+    const changes = this.sensorService.drainStatusChanges();
+    for (const c of changes) {
+      this.sensorGateway.broadcastStationStatus(c);
     }
     return { ok: true };
   }

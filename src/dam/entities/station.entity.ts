@@ -29,8 +29,11 @@ export class Station {
   @Column({ type: 'varchar', length: 64, nullable: true })
   km: string;
 
-  @Column({ type: 'varchar', length: 16, default: 'safe' })
+  @Column({ type: 'varchar', length: 16, default: 'unknown' })
   status: string;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  statusReason: string;
 
   @Column({ type: 'float', default: 0 })
   waterLevel: number;

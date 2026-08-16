@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, MoreThan } from 'typeorm';
+import { Repository, IsNull, MoreThan, In } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SensorDataDto, SensorHistory, SensorSnapshot, StationStatusChangeEvent, DamMetricChangeEvent } from './sensor.dto';
@@ -64,6 +64,8 @@ export class SensorService implements OnModuleInit {
   // null = đã tính nhưng không có tín hiệu tươi nào ("unknown"); entry vắng mặt = chưa từng tính.
   private stationSeverityCache: Map<number, Severity | null> = new Map();
   private damSeverityCache: Map<string, Severity | null> = new Map();
+  private stationReasonCache: Map<number, string> = new Map();
+  private damReasonCache: Map<string, string> = new Map();
 
   private pendingStatusChanges: StationStatusChangeEvent[] = [];
 
@@ -320,17 +322,119 @@ export class SensorService implements OnModuleInit {
   }
 
   /**
-   * Tính lại severity tổng hợp (worst-case) của một Station từ 3 nguồn:
-   * 1. Rung động — severity đã do Jetson TX2 phân tích (latestVibrationStatusByNode)
-   * 2. Mực nước & độ ẩm — backend tự so ngưỡng (ThresholdConfig) với giá trị đo mới nhất
-   * 3. AlarmEvent (sự cố/vết nứt do AI phát hiện) chưa resolve
+   * Kiểm tra Trạm có đang kết nối với ít nhất 1 Sensor Node (online và có tín hiệu < 30s) hay không.
+   */
+  async isStationNodeConnected(stationId: number): Promise<boolean> {
+    const TIMEOUT_MS = 30_000;
+    const now = Date.now();
+
+    // 1. Kiểm tra snapshot thời gian thực gần nhất của trạm
+    const snapshot = this.latestByStation.get(stationId);
+    if (snapshot?.timestamp) {
+      const snapAge = now - new Date(snapshot.timestamp).getTime();
+      if (snapAge <= TIMEOUT_MS) {
+        return true;
+      }
+    }
+
+    // 2. Kiểm tra các Sensor Node thuộc trạm trong bộ nhớ cache
+    const nodeIds = this.nodeIdsByStation.get(stationId);
+    if (nodeIds && nodeIds.size > 0) {
+      const nodes = await this.nodeRepo.find({
+        where: { id: In(Array.from(nodeIds)) },
+      });
+      const hasOnlineNode = nodes.some(
+        n => n.status === 'online' && n.lastSeenAt && (now - new Date(n.lastSeenAt).getTime() <= TIMEOUT_MS),
+      );
+      if (hasOnlineNode) return true;
+    }
+
+    // 3. Truy vấn trực tiếp DB qua quan hệ Gateway -> Node
+    const onlineNodeInDb = await this.nodeRepo.createQueryBuilder('node')
+      .innerJoin('node.gateway', 'gw')
+      .where('gw.stationId = :stationId', { stationId })
+      .andWhere('node.status = :status', { status: 'online' })
+      .andWhere('node.lastSeenAt >= :threshold', { threshold: new Date(now - TIMEOUT_MS) })
+      .getOne();
+
+    return !!onlineNodeInDb;
+  }
+
+  /**
+   * Xử lý khi trạng thái kết nối của Node thay đổi (online/offline)
+   */
+  async handleNodeStatusChanged(nodeId: string, status: 'online' | 'offline'): Promise<void> {
+    let stationId = this.nodeStationIndex.get(nodeId);
+    if (!stationId) {
+      const node = await this.nodeRepo.findOne({
+        where: { id: nodeId },
+        relations: { gateway: true },
+      });
+      stationId = node?.gateway?.stationId;
+    }
+
+    if (stationId != null) {
+      await this.recomputeStationStatus(stationId);
+    }
+  }
+
+  /**
+   * Tính lại severity tổng hợp (worst-case) của một Station:
+   * - BƯỚC 1: Kiểm tra kết nối với Sensor Node. Nếu KHÔNG có node nào kết nối/online -> status = 'unknown'.
+   * - BƯỚC 2: Nếu CÓ kết nối -> Tính toán từ 3 nguồn:
+   *   1. Mực nước & độ ẩm — backend tự so ngưỡng (ThresholdConfig) với giá trị đo mới nhất
+   *   2. Rung động — severity do Jetson TX2 phân tích (latestVibrationStatusByNode)
+   *   3. AlarmEvent (sự cố/vết nứt do AI phát hiện) chưa resolve
    * Chỉ ghi DB & xếp hàng broadcast khi mức severity thực sự thay đổi.
    */
-  private async recomputeStationStatus(stationId: number): Promise<void> {
+  async recomputeStationStatus(stationId: number): Promise<void> {
     const snapshot = this.latestByStation.get(stationId);
     const damId = snapshot?.damId
       || Array.from(this.stationIdsByDam.entries()).find(([, ids]) => ids.has(stationId))?.[0]
       || DEFAULT_DAM_ID;
+
+    // Kiểm tra trạng thái kết nối với Sensor Node
+    const isConnected = await this.isStationNodeConnected(stationId);
+    if (!isConnected) {
+      const worst: Severity | null = null;
+      const nodeIds = this.nodeIdsByStation.get(stationId);
+      const statusReason = (!nodeIds || nodeIds.size === 0)
+        ? 'Chưa gắn Sensor Node vào trạm'
+        : 'Mất kết nối với Sensor Node (không có tín hiệu trong 30s)';
+
+      const hadPrev = this.stationSeverityCache.has(stationId);
+      const prevSeverity = this.stationSeverityCache.get(stationId) ?? null;
+      const prevReason = this.stationReasonCache.get(stationId) ?? '';
+      if (hadPrev && prevSeverity === worst && prevReason === statusReason) return;
+
+      this.stationSeverityCache.set(stationId, worst);
+      this.stationReasonCache.set(stationId, statusReason);
+      const status = severityToStatus(worst); // 'unknown'
+      await this.stationRepo.update(stationId, { status, statusReason }).catch(() => { });
+
+      this.statusHistoryRepo.save({
+        level: 'station',
+        stationId,
+        damId,
+        previousStatus: hadPrev ? severityToStatus(prevSeverity) : 'safe',
+        newStatus: status,
+        severity: -1,
+        reason: statusReason,
+      }).catch(() => { });
+
+      this.pendingStatusChanges.push({
+        level: 'station',
+        stationId,
+        damId,
+        status,
+        statusReason,
+        severity: -1,
+        timestamp: new Date().toISOString(),
+      });
+
+      await this.recomputeDamStatus(damId);
+      return;
+    }
 
     let configs = this.thresholdConfigCache.get(damId);
     if (!configs) {
@@ -340,15 +444,28 @@ export class SensorService implements OnModuleInit {
     const waterConfig = configs.find(c => c.sensorType === 'water_level');
     const humidityConfig = configs.find(c => c.sensorType === 'humidity');
 
-    // Chỉ gộp các tín hiệu CÒN TƯƠI — nếu không tín hiệu nào tươi, Station là "unknown" (null),
-    // không mặc định về NORMAL/"an toàn" nữa.
     const freshSeverities: Severity[] = [];
+    const reasonParts: string[] = [];
+
     if (snapshot) {
-      // Nước/độ ẩm: backend tự tính trực tiếp từ lần ingest gần nhất, luôn coi là tươi.
-      // Chỉ tính khi CÓ cấu hình ngưỡng — thiếu ngưỡng thì không có cơ sở để kết luận,
-      // im lặng coi là NORMAL sẽ che mất việc đập chưa được cấu hình (báo "an toàn" giả).
-      if (waterConfig) freshSeverities.push(classifySeverity(snapshot.waterLevel, waterConfig));
-      if (humidityConfig) freshSeverities.push(classifySeverity(snapshot.moisture, humidityConfig));
+      if (waterConfig) {
+        const wSev = classifySeverity(snapshot.waterLevel, waterConfig);
+        freshSeverities.push(wSev);
+        if (wSev > Severity.NORMAL) {
+          const label = wSev === Severity.CRITICAL ? 'VƯỢT BĐ3' : wSev === Severity.ALERT ? 'VƯỢT BĐ2' : 'VƯỢT BĐ1';
+          const thresh = wSev === Severity.CRITICAL ? waterConfig.criticalHigh : wSev === Severity.ALERT ? waterConfig.alertHigh : waterConfig.warnHigh;
+          reasonParts.push(`Mực nước ${snapshot.waterLevel}m (${label} >= ${thresh}m)`);
+        }
+      }
+      if (humidityConfig) {
+        const hSev = classifySeverity(snapshot.moisture, humidityConfig);
+        freshSeverities.push(hSev);
+        if (hSev > Severity.NORMAL) {
+          const label = hSev === Severity.CRITICAL ? 'Nguy cấp' : hSev === Severity.ALERT ? 'Nguy hiểm' : 'Cảnh báo';
+          const thresh = hSev === Severity.CRITICAL ? humidityConfig.criticalHigh : hSev === Severity.ALERT ? humidityConfig.alertHigh : humidityConfig.warnHigh;
+          reasonParts.push(`Độ ẩm ${snapshot.moisture}% (${label} >= ${thresh}%)`);
+        }
+      }
     }
 
     const nodeIds = this.nodeIdsByStation.get(stationId);
@@ -357,24 +474,40 @@ export class SensorService implements OnModuleInit {
       for (const nodeId of nodeIds) {
         const vib = this.latestVibrationStatusByNode.get(nodeId);
         if (vib && now - vib.receivedAt.getTime() <= VIBRATION_SIGNAL_TTL_MS) {
-          freshSeverities.push(severityFromString(vib.severity));
+          const vSev = severityFromString(vib.severity);
+          freshSeverities.push(vSev);
+          if (vSev > Severity.NORMAL) {
+            const label = vSev === Severity.CRITICAL ? 'Nguy cấp' : vSev === Severity.ALERT ? 'Nguy hiểm' : 'Cảnh báo';
+            reasonParts.push(`Độ rung ${vib.amp != null ? vib.amp + ' mm/s' : ''} (${label})`);
+          }
         }
       }
     }
 
-    // AlarmEvent chưa resolve: không có TTL theo thời gian, chỉ hết hiệu lực khi được resolve.
     const alarmSeverity = this.openAlarmSeverityByStation.get(stationId);
-    if (alarmSeverity != null) freshSeverities.push(alarmSeverity);
+    if (alarmSeverity != null) {
+      freshSeverities.push(alarmSeverity);
+      if (alarmSeverity > Severity.NORMAL) {
+        reasonParts.push('Có sự cố / cảnh báo AI chưa xử lý');
+      }
+    }
 
-    const worst: Severity | null = freshSeverities.length > 0 ? Math.max(...freshSeverities) : null;
+    // Khi đã kết nối, nếu không có vi phạm ngưỡng nào thì mức an toàn là NORMAL (0 -> 'safe')
+    const worst: Severity | null = freshSeverities.length > 0 ? Math.max(...freshSeverities) : Severity.NORMAL;
+
+    const statusReason = reasonParts.length > 0
+      ? reasonParts.join('; ')
+      : 'Các thông số mực nước, độ ẩm, độ rung đều trong ngưỡng an toàn';
 
     const hadPrev = this.stationSeverityCache.has(stationId);
     const prevSeverity = this.stationSeverityCache.get(stationId) ?? null;
-    if (hadPrev && prevSeverity === worst) return;
+    const prevReason = this.stationReasonCache.get(stationId) ?? '';
+    if (hadPrev && prevSeverity === worst && prevReason === statusReason) return;
 
     this.stationSeverityCache.set(stationId, worst);
+    this.stationReasonCache.set(stationId, statusReason);
     const status = severityToStatus(worst);
-    await this.stationRepo.update(stationId, { status }).catch(() => { });
+    await this.stationRepo.update(stationId, { status, statusReason }).catch(() => { });
 
     this.statusHistoryRepo.save({
       level: 'station',
@@ -383,6 +516,7 @@ export class SensorService implements OnModuleInit {
       previousStatus: hadPrev ? severityToStatus(prevSeverity) : 'safe',
       newStatus: status,
       severity: worst ?? -1,
+      reason: statusReason,
     }).catch(() => { });
 
     this.pendingStatusChanges.push({
@@ -390,6 +524,7 @@ export class SensorService implements OnModuleInit {
       stationId,
       damId,
       status,
+      statusReason,
       severity: worst ?? -1,
       timestamp: new Date().toISOString(),
     });
@@ -399,9 +534,11 @@ export class SensorService implements OnModuleInit {
 
   // Trạng thái an toàn của Dam = mức nghiêm trọng nhất trong các Station thuộc Dam có dữ liệu tươi.
   // Station "unknown" không tham gia phép so sánh — Dam chỉ "unknown" khi TẤT CẢ Station đều unknown.
-  private async recomputeDamStatus(damId: string): Promise<void> {
+  async recomputeDamStatus(damId: string): Promise<void> {
     const stationIds = this.stationIdsByDam.get(damId);
     const knownSeverities: Severity[] = [];
+    const triggeringReasons: string[] = [];
+
     if (stationIds) {
       for (const sid of stationIds) {
         const sev = this.stationSeverityCache.get(sid);
@@ -410,13 +547,36 @@ export class SensorService implements OnModuleInit {
     }
     const worst: Severity | null = knownSeverities.length > 0 ? Math.max(...knownSeverities) : null;
 
+    let damReason = '';
+    if (worst === null) {
+      damReason = 'Tất cả các trạm trực thuộc đều chưa gắn hoặc mất kết nối node';
+    } else if (worst === Severity.NORMAL) {
+      damReason = 'Tất cả các trạm trực thuộc hoạt động an toàn';
+    } else {
+      if (stationIds) {
+        for (const sid of stationIds) {
+          if (this.stationSeverityCache.get(sid) === worst) {
+            const stReason = this.stationReasonCache.get(sid);
+            const stObj = await this.stationRepo.findOne({ where: { id: sid } }).catch(() => null);
+            const stName = stObj?.name || `Trạm #${sid}`;
+            triggeringReasons.push(`${stName} (${stReason || severityToStatus(worst)})`);
+          }
+        }
+      }
+      damReason = triggeringReasons.length > 0
+        ? `Do ${triggeringReasons.slice(0, 2).join('; ')}`
+        : `Có trạm ở mức ${severityToStatus(worst)}`;
+    }
+
     const hadPrev = this.damSeverityCache.has(damId);
     const prevSeverity = this.damSeverityCache.get(damId) ?? null;
-    if (hadPrev && prevSeverity === worst) return;
+    const prevDamReason = this.damReasonCache.get(damId) ?? '';
+    if (hadPrev && prevSeverity === worst && prevDamReason === damReason) return;
 
     this.damSeverityCache.set(damId, worst);
+    this.damReasonCache.set(damId, damReason);
     const status = severityToStatus(worst);
-    await this.damRepo.update(damId, { status }).catch(() => { });
+    await this.damRepo.update(damId, { status, statusReason: damReason }).catch(() => { });
 
     this.statusHistoryRepo.save({
       level: 'dam',
@@ -425,12 +585,14 @@ export class SensorService implements OnModuleInit {
       previousStatus: hadPrev ? severityToStatus(prevSeverity) : 'safe',
       newStatus: status,
       severity: worst ?? -1,
+      reason: damReason,
     }).catch(() => { });
 
     this.pendingStatusChanges.push({
       level: 'dam',
       damId,
       status,
+      statusReason: damReason,
       severity: worst ?? -1,
       timestamp: new Date().toISOString(),
     });

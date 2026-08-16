@@ -27,8 +27,11 @@ export class Dam {
   @Column({ type: 'float', default: 0 })
   fillPct: number;
 
-  @Column({ type: 'varchar', length: 16, default: 'safe' })
+  @Column({ type: 'varchar', length: 16, default: 'unknown' })
   status: string;
+
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  statusReason: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   cameraUrl: string;

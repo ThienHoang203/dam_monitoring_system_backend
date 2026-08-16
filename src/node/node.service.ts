@@ -22,6 +22,7 @@ import {
 } from '../common/validators/naming-convention.validator';
 import { GatewayService } from '../gateway/gateway.service';
 import { SensorService } from '../sensor/sensor.service';
+import { SensorGateway } from '../gateway/sensor.gateway';
 import { CameraService } from '../camera/camera.service';
 
 @Injectable()
@@ -35,6 +36,7 @@ export class NodeService {
     private readonly thresholdConfigRepo: Repository<ThresholdConfig>,
     private readonly gatewayService: GatewayService,
     private readonly sensorService: SensorService,
+    private readonly sensorGateway: SensorGateway,
     private readonly cameraService: CameraService,
   ) {}
 
@@ -412,6 +414,11 @@ export class NodeService {
   async updateOnlineStatus(nodeId: string, lastSeenAt: Date): Promise<void> {
     try {
       await this.nodeRepo.update(nodeId, { status: 'online', lastSeenAt });
+      await this.sensorService.handleNodeStatusChanged(nodeId, 'online');
+      const changes = this.sensorService.drainStatusChanges();
+      for (const c of changes) {
+        this.sensorGateway.broadcastStationStatus(c);
+      }
     } catch {
       // Node not registered — ignore silently for backward compatibility
     }
@@ -431,6 +438,11 @@ export class NodeService {
           console.log(
             `[HeartbeatCron] Sensor Node "${node.id}" không gửi tín hiệu trong 30s (lần cuối: ${node.lastSeenAt ? new Date(node.lastSeenAt).toISOString() : 'chưa gửi'}). Đã chuyển sang OFFLINE.`,
           );
+          await this.sensorService.handleNodeStatusChanged(node.id, 'offline');
+          const changes = this.sensorService.drainStatusChanges();
+          for (const c of changes) {
+            this.sensorGateway.broadcastStationStatus(c);
+          }
         }
       }
     } catch (err: any) {

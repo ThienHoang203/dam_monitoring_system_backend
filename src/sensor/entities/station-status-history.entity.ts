@@ -28,6 +28,9 @@ export class StationStatusHistory {
   @Column({ type: 'integer' })
   severity: number;
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  reason: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   changedAt: Date;
 }

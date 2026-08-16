@@ -70,6 +70,7 @@ export interface StationStatusChangeEvent {
   stationId?: number;
   damId: string;
   status: string; // 'safe' | 'warning' | 'danger' | 'critical' | 'unknown'
+  statusReason?: string;
   severity: number;
   timestamp: string;
 }

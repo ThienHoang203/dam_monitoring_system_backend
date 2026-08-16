@@ -178,12 +178,14 @@ export class DamService implements OnModuleInit {
     const dam = this.damRepo.create({
       ...dto,
       id: damId,
+      status: 'unknown',
     });
     const saved = await this.damRepo.save(dam);
 
     // Đập mới phải có ngay bộ ngưỡng mặc định, nếu không sẽ không cảnh báo được
     // nước/độ ẩm và form sửa ngưỡng sẽ lưu không ăn (không có bản ghi để update).
     await this.sensorService.ensureThresholdConfigs(saved.id);
+    await this.sensorService.recomputeDamStatus(saved.id);
 
     await this.auditLogService.logAction({
       action: 'CREATE_DAM',
@@ -193,7 +195,7 @@ export class DamService implements OnModuleInit {
       userRole: 'ADMIN',
     });
 
-    return saved;
+    return await this.findDamById(saved.id);
   }
 
   async updateDam(id: string, dto: UpdateDamDto): Promise<Dam> {
@@ -262,12 +264,15 @@ export class DamService implements OnModuleInit {
       throw new ConflictException(`Trạm quan trắc "${dto.name}" đã tồn tại trên đập này!`);
     }
 
-    const station = this.stationRepo.create(dto);
+    const station = this.stationRepo.create({
+      ...dto,
+      status: 'unknown',
+    });
     const saved = await this.stationRepo.save(station);
 
-    // Đăng ký ngay Station -> Dam để tổng hợp trạng thái/waterLevel cấp Dam nhận ra Station mới
-    // mà không cần đợi backend khởi động lại (xem SensorService.registerStationDam).
+    // Đăng ký ngay Station -> Dam và kích hoạt đánh giá trạng thái an toàn
     this.sensorService.registerStationDam(saved.id, saved.damId);
+    await this.sensorService.recomputeStationStatus(saved.id);
 
     await this.auditLogService.logAction({
       action: 'CREATE_STATION',
@@ -277,7 +282,7 @@ export class DamService implements OnModuleInit {
       userRole: 'ADMIN',
     });
 
-    return saved;
+    return await this.findStationById(saved.id);
   }
 
   async updateStation(id: number, dto: UpdateStationDto): Promise<Station> {

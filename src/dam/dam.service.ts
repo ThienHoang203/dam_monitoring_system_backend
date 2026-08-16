@@ -109,6 +109,14 @@ export class DamService implements OnModuleInit {
   // ── Seed dữ liệu mẫu ──
 
   async seedDefaultData() {
+    // Chuẩn hóa dữ liệu cũ nếu đang có trạng thái 'safe' chuyển thành 'unknown' (không xác định)
+    try {
+      await this.damRepo.update({ status: 'safe' }, { status: 'unknown' });
+      await this.stationRepo.update({ status: 'safe' }, { status: 'unknown' });
+    } catch {
+      // bỏ qua nếu bảng chưa khởi tạo
+    }
+
     const count = await this.damRepo.count();
     if (count > 0) {
       await this.seedDefaultDevices();
@@ -118,10 +126,10 @@ export class DamService implements OnModuleInit {
     console.log('[DamService] Seeding default Dam and Station data...');
 
     const damsData = [
-      { damId: 'DAM-001', name: 'Đập Thủy điện Hòa Bình', location: 'Hòa Bình', latitude: 20.8167, longitude: 105.3265, status: 'safe', waterLevel: 105.2, flow: 1200, fillPct: 78 },
+      { damId: 'DAM-001', name: 'Đập Thủy điện Hòa Bình', location: 'Hòa Bình', latitude: 20.8167, longitude: 105.3265, status: 'unknown', waterLevel: 105.2, flow: 1200, fillPct: 78 },
       { damId: 'DAM-002', name: 'Đập Sơn La', location: 'Sơn La', latitude: 21.5622, longitude: 103.9781, status: 'warning', waterLevel: 212.5, flow: 3450, fillPct: 88 },
-      { damId: 'DAM-003', name: 'Đập Lai Châu', location: 'Lai Châu', latitude: 22.1464, longitude: 103.0189, status: 'safe', waterLevel: 295.1, flow: 850, fillPct: 65 },
-      { damId: 'DAM-004', name: 'Đập Tuyên Quang', location: 'Tuyên Quang', latitude: 22.3556, longitude: 105.3853, status: 'safe', waterLevel: 118.3, flow: 620, fillPct: 72 },
+      { damId: 'DAM-003', name: 'Đập Lai Châu', location: 'Lai Châu', latitude: 22.1464, longitude: 103.0189, status: 'unknown', waterLevel: 295.1, flow: 850, fillPct: 65 },
+      { damId: 'DAM-004', name: 'Đập Tuyên Quang', location: 'Tuyên Quang', latitude: 22.3556, longitude: 105.3853, status: 'unknown', waterLevel: 118.3, flow: 620, fillPct: 72 },
     ];
 
     const damByCode = new Map<string, Dam>();
@@ -133,7 +141,7 @@ export class DamService implements OnModuleInit {
     const stationsData = [
       { stationId: 'STA-001-01', stationCode: 'ST01', name: 'Trạm Tân Ấp 1', location: 'Hoàn Kiếm, Hà Nội', latitude: 21.0381, longitude: 105.8492, river: 'Sông Hồng', km: 'K25+500', status: 'danger', waterLevel: 12.5, change: 0.4, pressure: 450, flow: 3200, humidity: 78, damId: 'DAM-001' },
       { stationId: 'STA-001-02', stationCode: 'ST02', name: 'Trạm Nhật Tân', location: 'Tây Hồ, Hà Nội', latitude: 21.0825, longitude: 105.8194, river: 'Sông Hồng', km: 'K32+200', status: 'warning', waterLevel: 9.8, change: 0.1, pressure: 280, flow: 2100, humidity: 62, damId: 'DAM-001' },
-      { stationId: 'STA-001-03', stationCode: 'ST03', name: 'Trạm Long Biên', location: 'Long Biên, Hà Nội', latitude: 21.0428, longitude: 105.8617, river: 'Sông Hồng', km: 'K18+000', status: 'safe', waterLevel: 6.2, change: -0.2, pressure: 120, flow: 1400, humidity: 45, damId: 'DAM-001' },
+      { stationId: 'STA-001-03', stationCode: 'ST03', name: 'Trạm Long Biên', location: 'Long Biên, Hà Nội', latitude: 21.0428, longitude: 105.8617, river: 'Sông Hồng', km: 'K18+000', status: 'unknown', waterLevel: 6.2, change: -0.2, pressure: 120, flow: 1400, humidity: 45, damId: 'DAM-001' },
       { stationId: 'STA-002-01', stationCode: 'ST04', name: 'Trạm Sơn Tây', location: 'Sơn Tây, Hà Nội', latitude: 21.1415, longitude: 105.5034, river: 'Sông Đà', km: 'K45+000', status: 'warning', waterLevel: 8.1, change: 0.5, pressure: 310, flow: 2450, humidity: 58, damId: 'DAM-002' },
       { stationId: 'STA-001-04', stationCode: 'ST05', name: 'Trạm Hà Nội', location: 'Hoàn Kiếm, Hà Nội', latitude: 21.0285, longitude: 105.8542, river: 'Sông Hồng', km: 'K120+000', status: 'warning', waterLevel: 6.12, change: 0.05, pressure: 200, flow: 1800, humidity: 52, damId: 'DAM-001' },
       { stationId: 'STA-001-05', stationCode: 'ST06', name: 'Trạm Hưng Yên', location: 'Hưng Yên', latitude: 20.6464, longitude: 106.0511, river: 'Sông Hồng', km: 'TR-HY-01', status: 'danger', waterLevel: 7.45, change: 0.3, pressure: 380, flow: 2800, humidity: 71, damId: 'DAM-001' },

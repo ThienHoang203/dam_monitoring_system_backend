@@ -109,11 +109,21 @@ export class NodeController {
   // ── Node → Camera Mapping ──
 
   @Put(':id/map-camera')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async mapCamera(
     @Param('id') nodeId: string,
     @Body() body: { cameraId: string | null },
+    @CurrentUser() user?: User,
   ) {
+    const nodeObj = await this.nodeService.findById(nodeId);
+    if (
+      user?.role === 'OPERATOR' &&
+      user?.assignedDamId &&
+      nodeObj.gateway?.station?.damId &&
+      nodeObj.gateway.station.damId !== user.assignedDamId
+    ) {
+      throw new ForbiddenException('Bạn không có quyền gán Camera cho Node của đập khác');
+    }
     const node = await this.nodeService.mapCamera(nodeId, body.cameraId);
     return { ok: true, node };
   }
@@ -128,28 +138,62 @@ export class NodeController {
   }
 
   @Post(':nodeId/sensors')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async addSensor(
     @Param('nodeId') nodeId: string,
     @Body() dto: CreateSensorDto,
+    @CurrentUser() user?: User,
   ) {
+    const nodeObj = await this.nodeService.findById(nodeId);
+    if (
+      user?.role === 'OPERATOR' &&
+      user?.assignedDamId &&
+      nodeObj.gateway?.station?.damId &&
+      nodeObj.gateway.station.damId !== user.assignedDamId
+    ) {
+      throw new ForbiddenException('Bạn không có quyền thêm Cảm biến cho Node của đập khác');
+    }
     const sensor = await this.nodeService.addSensor(nodeId, dto);
     return { ok: true, sensor };
   }
 
   @Put(':nodeId/sensors/:sensorId')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async updateSensor(
+    @Param('nodeId') nodeId: string,
     @Param('sensorId') sensorId: string,
     @Body() dto: UpdateSensorDto,
+    @CurrentUser() user?: User,
   ) {
+    const nodeObj = await this.nodeService.findById(nodeId);
+    if (
+      user?.role === 'OPERATOR' &&
+      user?.assignedDamId &&
+      nodeObj.gateway?.station?.damId &&
+      nodeObj.gateway.station.damId !== user.assignedDamId
+    ) {
+      throw new ForbiddenException('Bạn không có quyền chỉnh sửa Cảm biến của đập khác');
+    }
     const sensor = await this.nodeService.updateSensor(sensorId, dto);
     return { ok: true, sensor };
   }
 
   @Delete(':nodeId/sensors/:sensorId')
-  @Roles('ADMIN')
-  async removeSensor(@Param('sensorId') sensorId: string) {
+  @Roles('ADMIN', 'OPERATOR')
+  async removeSensor(
+    @Param('nodeId') nodeId: string,
+    @Param('sensorId') sensorId: string,
+    @CurrentUser() user?: User,
+  ) {
+    const nodeObj = await this.nodeService.findById(nodeId);
+    if (
+      user?.role === 'OPERATOR' &&
+      user?.assignedDamId &&
+      nodeObj.gateway?.station?.damId &&
+      nodeObj.gateway.station.damId !== user.assignedDamId
+    ) {
+      throw new ForbiddenException('Bạn không có quyền xóa Cảm biến của đập khác');
+    }
     return this.nodeService.removeSensor(sensorId);
   }
 }

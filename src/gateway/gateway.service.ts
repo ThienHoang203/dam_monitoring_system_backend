@@ -58,8 +58,11 @@ export class GatewayService implements OnModuleInit {
   }
 
   /** Đổi mã trạm (STA-001-01) sang bản ghi Station (cần .id cho Gateway.stationRefId). */
-  private async resolveStation(stationId: string): Promise<Station> {
-    const station = await this.stationRepo.findOne({ where: { stationId } });
+  async resolveStation(stationId: string): Promise<Station> {
+    const station = await this.stationRepo.findOne({
+      where: { stationId },
+      relations: { dam: true },
+    });
     if (!station) {
       throw new NotFoundException(`Trạm "${stationId}" không tồn tại.`);
     }

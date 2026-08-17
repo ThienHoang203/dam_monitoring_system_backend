@@ -31,21 +31,21 @@ export class CameraController {
   }
 
   @Post()
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async create(@Body() dto: CreateCameraDto) {
     const camera = await this.cameraService.create(dto);
     return { ok: true, camera };
   }
 
   @Put(':id')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async update(@Param('id') id: string, @Body() dto: UpdateCameraDto) {
     const camera = await this.cameraService.update(id, dto);
     return { ok: true, camera };
   }
 
   @Delete(':id')
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'OPERATOR')
   async delete(@Param('id') id: string) {
     return this.cameraService.delete(id);
   }

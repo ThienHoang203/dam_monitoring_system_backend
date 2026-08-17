@@ -9,6 +9,7 @@ import {
   Query,
   Headers,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { GatewayService } from './gateway.service';
 import { CreateGatewayDto, UpdateGatewayDto } from './gateway.dto';
@@ -51,24 +52,58 @@ export class GatewayController {
   }
 
   @Post('api/gateways')
-  @Roles('ADMIN')
-  async create(@Body() dto: CreateGatewayDto) {
+  @Roles('ADMIN', 'OPERATOR')
+  async create(@Body() dto: CreateGatewayDto, @CurrentUser() user?: User) {
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      const station = await this.gatewayService.resolveStation(dto.stationId);
+      if (station.dam?.damId && station.dam.damId !== user.assignedDamId) {
+        throw new ForbiddenException('Bạn không có quyền tạo Gateway cho đập khác');
+      }
+    }
     const gateway = await this.gatewayService.create(dto);
     return { ok: true, gateway };
   }
 
   @Put('api/gateways/:id')
-  @Roles('ADMIN')
-  async update(@Param('id') id: string, @Body() dto: UpdateGatewayDto) {
+  @Roles('ADMIN', 'OPERATOR')
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateGatewayDto,
+    @CurrentUser() user?: User,
+  ) {
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      const existing = await this.gatewayService.findById(id);
+      if (
+        existing.station?.dam?.damId &&
+        existing.station.dam.damId !== user.assignedDamId
+      ) {
+        throw new ForbiddenException('Bạn không có quyền chỉnh sửa Gateway của đập khác');
+      }
+      if (dto.stationId) {
+        const newStation = await this.gatewayService.resolveStation(dto.stationId);
+        if (newStation.dam?.damId && newStation.dam.damId !== user.assignedDamId) {
+          throw new ForbiddenException('Bạn không thể chuyển Gateway sang đập khác');
+        }
+      }
+    }
     // Khi đổi trạm, gatewayId được sinh lại theo trạm mới — `renamedFrom` báo cho client biết
-    // để cảnh báo admin: thiết bị Jetson vật lý phải được cấu hình lại thủ công.
+    // để cảnh báo admin/operator: thiết bị Jetson vật lý phải được cấu hình lại thủ công.
     const { gateway, renamedFrom } = await this.gatewayService.update(id, dto);
     return { ok: true, gateway, renamedFrom };
   }
 
   @Delete('api/gateways/:id')
-  @Roles('ADMIN')
-  async delete(@Param('id') id: string) {
+  @Roles('ADMIN', 'OPERATOR')
+  async delete(@Param('id') id: string, @CurrentUser() user?: User) {
+    if (user?.role === 'OPERATOR' && user?.assignedDamId) {
+      const existing = await this.gatewayService.findById(id);
+      if (
+        existing.station?.dam?.damId &&
+        existing.station.dam.damId !== user.assignedDamId
+      ) {
+        throw new ForbiddenException('Bạn không có quyền xóa Gateway của đập khác');
+      }
+    }
     return this.gatewayService.delete(id);
   }
 

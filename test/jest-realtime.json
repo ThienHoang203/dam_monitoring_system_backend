@@ -1,13 +1,13 @@
 {
   "moduleFileExtensions": ["js", "json", "ts"],
   "rootDir": "..",
-  "roots": ["<rootDir>/test"],
+  "roots": ["<rootDir>/test/realtime"],
   "testEnvironment": "node",
-  "testRegex": ".*\\.e2e-spec\\.ts$",
+  "testRegex": ".*\\.rt-spec\\.ts$",
   "transform": {
     "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "<rootDir>/tsconfig.spec.json" }]
   },
-  "setupFilesAfterEnv": ["<rootDir>/test/setup-e2e.ts"],
+  "setupFilesAfterEnv": ["<rootDir>/test/setup-realtime.ts"],
   "testTimeout": 60000,
   "maxWorkers": 1
 }

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // tsconfig.json dùng "nodenext" — hợp với build production nhưng khiến ts-jest
+    // vỡ ở các import CommonJS interop (`import * as cookieParser from 'cookie-parser'`,
+    // `import * as bcrypt from 'bcrypt'`). Override chỉ áp dụng cho test.
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "isolatedModules": false,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

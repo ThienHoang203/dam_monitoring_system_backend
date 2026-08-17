@@ -18,6 +18,9 @@ lerna-debug.log*
 # Tests
 /coverage
 /.nyc_output
+/test-results
+# .env.test được commit có chủ ý — chỉ chứa giá trị giả cho môi trường test.
+.env.test.local
 
 # IDEs and editors
 /.idea
